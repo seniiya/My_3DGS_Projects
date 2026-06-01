@@ -1,0 +1,58 @@
+# Unity generated
+Library/
+Temp/
+Obj/
+Build/
+Builds/
+Logs/
+UserSettings/
+MemoryCaptures/
+
+# Unity3D generated meta files
+*.pidb.meta
+*.pdb.meta
+*.mdb.meta
+
+# Unity3D generated file on crash reports
+sysinfo.txt
+
+# Builds
+*.apk
+*.aab
+*.unitypackage
+*.app
+
+# Crashlytics
+crashlytics-build.properties
+
+# Editor-specific project files
+.vs/
+.idea/
+*.csproj
+*.sln
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.env
+
+# OS generated
+.DS_Store
+Thumbs.db
+
+# Large 3DGS / scene assets (exceed GitHub 100MB limit)
+*.ply
+*.bytes
+Assets/Scenes/total.fbx
+Assets/Scenes/total.ply
+Assets/Scenes/splat.ply
+
+# Large textures
+Assets/Adventure_Character/Textures/*.tga
+
+# IDE / Claude Code
+.claude/
+.vscode/
+.vsconfig
+*.slnx

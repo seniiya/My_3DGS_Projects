@@ -1,0 +1,31 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 33b71fae31e6c7d438e8566dc713e666, type: 3}
+  m_Name: desk
+  m_EditorClassIdentifier: GaussianSplatting::GaussianSplatting.Runtime.GaussianSplatAsset
+  m_FormatVersion: 20231020
+  m_SplatCount: 267449
+  m_BoundsMin: {x: -240.11035, y: -239.79321, z: -239.58154}
+  m_BoundsMax: {x: 239.88965, y: 240.20679, z: 240.41846}
+  m_DataHash:
+    serializedVersion: 2
+    Hash: 4743971721ae9d1ddbf411cae77494e0
+  m_PosFormat: 2
+  m_ScaleFormat: 2
+  m_SHFormat: 3
+  m_ColorFormat: 2
+  m_PosData: {fileID: 4900000, guid: f4966de634a36194eae4c2cc99fd8a43, type: 3}
+  m_ColorData: {fileID: 4900000, guid: 23f469ea9d3aebb4394e94f10eb0c034, type: 3}
+  m_OtherData: {fileID: 4900000, guid: 8a02667b3a4936548b6079a2c3cc4cbe, type: 3}
+  m_SHData: {fileID: 4900000, guid: 07a3e364854af9441b06450f58737cf5, type: 3}
+  m_ChunkData: {fileID: 4900000, guid: 4104f0fb52b5bd240af19638d4fee07b, type: 3}
+  m_Cameras: []

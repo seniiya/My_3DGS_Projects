@@ -1,0 +1,31 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 33b71fae31e6c7d438e8566dc713e666, type: 3}
+  m_Name: labroom
+  m_EditorClassIdentifier: GaussianSplatting::GaussianSplatting.Runtime.GaussianSplatAsset
+  m_FormatVersion: 20231020
+  m_SplatCount: 423181
+  m_BoundsMin: {x: -244.00854, y: -240.74951, z: -240.13354}
+  m_BoundsMax: {x: 235.99146, y: 239.25049, z: 239.86646}
+  m_DataHash:
+    serializedVersion: 2
+    Hash: bcdd40887fb79058049d2e02664cd2c7
+  m_PosFormat: 2
+  m_ScaleFormat: 2
+  m_SHFormat: 3
+  m_ColorFormat: 2
+  m_PosData: {fileID: 4900000, guid: 9b2c01a2daad44647b8d2eaab32ce1d1, type: 3}
+  m_ColorData: {fileID: 4900000, guid: eb618fea4c395354a9d8d74f50496e5d, type: 3}
+  m_OtherData: {fileID: 4900000, guid: fb61fb19c8e31dc4d81d619a088ae77e, type: 3}
+  m_SHData: {fileID: 4900000, guid: 6879536959378054ba22dd53ff20b8bd, type: 3}
+  m_ChunkData: {fileID: 4900000, guid: da52df6ece886aa448b4f31e5a737804, type: 3}
+  m_Cameras: []
