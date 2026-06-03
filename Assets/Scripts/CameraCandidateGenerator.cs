@@ -46,6 +46,48 @@ public class CameraCandidateGenerator : MonoBehaviour
     // ★ FIX: 회전된 mesh의 AABB 오류를 보정하기 위한 내부 탐색 반경
     private float _safeSearchRadius = 8f;
 
+    [Header("Manual Playable Camera Area")]
+    public BoxCollider playableAreaBox;
+    public bool useManualPlayableArea = false;
+    public bool drawManualPlayableAreaGizmo = false;
+
+    [Header("Auto Create Playable Area Box")]
+    public bool autoCreatePlayableAreaBoxFromMesh = false;
+    public string playableAreaObjectName = "PlayableCameraArea_Auto";
+    [Range(0.1f, 1.0f)]
+    public float autoBoxShrinkX = 0.85f;
+    [Range(0.1f, 1.0f)]
+    public float autoBoxShrinkZ = 0.85f;
+    public float autoBoxHeight = 2.2f;
+    public float autoBoxYOffset = 1.1f;
+    public bool logPlayableAreaCorners = true;
+
+    [Header("Auto Playable Area From Mesh")]
+    public Transform playableAreaMeshRoot;
+    public bool useAutoPlayableMeshBounds = false;
+    [Range(0.1f, 1.0f)]
+    public float playableBoundsShrinkX = 0.85f;
+    [Range(0.1f, 1.0f)]
+    public float playableBoundsShrinkZ = 0.85f;
+    public float playableBoundsYOffsetMin = -0.2f;
+    public float playableBoundsYOffsetMax = 2.2f;
+    public bool drawAutoPlayableBoundsGizmo = false;
+
+    private MeshFilter _playableMeshFilter;
+    private Bounds _playableLocalBounds;
+    private bool _hasPlayableLocalBounds = false;
+
+    [Header("Auto Playable Area From Floor Vertices")]
+    public bool autoCreatePlayableAreaFromFloorVertices = false;
+    public float floorVertexTolerance = 0.25f;
+    public float floorAreaShrinkX = 0.90f;
+    public float floorAreaShrinkZ = 0.90f;
+    public float playableAreaHeight = 2.0f;
+    public float playableAreaBottomOffset = 0.05f;
+    public bool usePercentileBounds = true;
+    [Range(0f, 10f)]
+    public float boundsPercentileTrim = 5f;
+
     [Header("Sampling")]
     [Range(100, 1000)]
     public int sampleCount = 300;
@@ -73,6 +115,12 @@ public class CameraCandidateGenerator : MonoBehaviour
     public bool isBirdsEyeProfile = false;
     public float targetTiltMin = -12f;
     public float targetTiltMax = 12f;
+
+    [Header("View Preference Settings")]
+    public bool useCharacterLocalViewPreference = true;
+    public float viewYawOffsetDeg = 0f;
+    public float viewConeHalfAngle = 75f;
+    public float quarterViewHalfAngle = 50f;
 
     private const float COLLISION_RADIUS = 0.18f;
 
@@ -139,6 +187,7 @@ public class CameraCandidateGenerator : MonoBehaviour
         public float hOverH;
         public float angleScore;
         public float scaleScore;
+        public float viewScore;
         public float tiltDeg;
     }
 
@@ -236,6 +285,7 @@ public class CameraCandidateGenerator : MonoBehaviour
         {
             Debug.Log("[PCCG] No ceiling detected above pivot.");
         }
+        Debug.Log($"[PCCG] Ceiling check: pivotY={pivotPoint.y:F2}, detectedCeilingY={ceilingY:F2}");
 
         // ── Step 1: h/H → D 변환 ────────────────────────────────────────────
         float subjectHeightM = GetReferenceSubjectHeight();
@@ -262,20 +312,15 @@ public class CameraCandidateGenerator : MonoBehaviour
             : _safeSearchRadius;
 
         // Profile p는 scoring target. sampling range는 공간 기준으로 넓게 설정.
-        float D_min = 0.8f;
-        float D_max = Mathf.Max(1.5f, _safeSearchRadius);
+        float D_min = profileDMin;
+        float D_max = profileDMax;
 
-        if (hOverH_min >= telephotoThreshold)
-        {
-            D_min = 1.0f;
-            D_max = Mathf.Min(_safeSearchRadius, Mathf.Max(3.0f, profileDMax));
-        }
+        if (D_max < D_min + 0.3f)
+            D_max = D_min + 0.3f;
 
-        if (isBirdsEyeProfile)
-        {
-            D_min = 1.0f;
-            D_max = Mathf.Min(_safeSearchRadius, 4.5f);
-        }
+        D_max = Mathf.Min(D_max, _safeSearchRadius);
+        if (D_max < D_min)
+            D_min = Mathf.Max(0.1f, D_max - 0.3f);
 
         Debug.Log($"[PCCG] Profile h/H=[{hOverH_min:F3},{hOverH_max:F3}] profileD=[{profileDMin:F2},{profileDMax:F2}] samplingD=[{D_min:F2},{D_max:F2}]");
 
@@ -293,6 +338,8 @@ public class CameraCandidateGenerator : MonoBehaviour
         int rejectGround = 0;
         int rejectCeiling = 0;
         int rejectInsideSpace = 0;
+        int rejectScale = 0;
+        int rejectAngle = 0;
         int accepted = 0;
 
         foreach (Vector3 dir in sphereSamples)
@@ -351,7 +398,38 @@ public class CameraCandidateGenerator : MonoBehaviour
                 float tiltDeg = ComputeCameraTiltDeg(candidatePos, lookTargetPoint);
                 float angleScore = ComputeAngleScore(tiltDeg);
                 float scaleScore = ComputeScaleScore(actualHOverH);
-                float totalScore = angleScore * anglePriority * 0.5f + scaleScore * 0.5f;
+                float viewScore = ComputeViewPreferenceScore(candidatePos);
+
+                if (scaleScore <= 0.001f)
+                {
+                    rejectScale++;
+                    continue;
+                }
+
+                if (angleScore <= 0.001f)
+                {
+                    rejectAngle++;
+                    continue;
+                }
+
+                bool hasViewPreference =
+                    !string.IsNullOrEmpty(viewPreference) &&
+                    viewPreference.Trim().ToLowerInvariant() != "unspecified";
+
+                float totalScore;
+                if (hasViewPreference)
+                {
+                    totalScore =
+                        angleScore * anglePriority * 0.30f +
+                        scaleScore * 0.30f +
+                        viewScore * 0.40f;
+                }
+                else
+                {
+                    totalScore =
+                        angleScore * anglePriority * 0.50f +
+                        scaleScore * 0.50f;
+                }
 
                 Quaternion lookRot = Quaternion.LookRotation(lookTargetPoint - candidatePos, Vector3.up);
 
@@ -364,6 +442,7 @@ public class CameraCandidateGenerator : MonoBehaviour
                     hOverH       = actualHOverH,
                     angleScore   = angleScore,
                     scaleScore   = scaleScore,
+                    viewScore    = viewScore,
                     tiltDeg      = tiltDeg
                 });
                 accepted++;
@@ -384,32 +463,340 @@ public class CameraCandidateGenerator : MonoBehaviour
         if (topCandidates.Count > 0)
         {
             var best = topCandidates[0];
-            Debug.Log($"[PCCG] Best: score={best.totalScore:F3} elev={best.elevationDeg:F1}° tilt={best.tiltDeg:F1}° h/H={best.hOverH:F3}");
+            Debug.Log(
+                $"[PCCG] Best: score={best.totalScore:F3} elev={best.elevationDeg:F1}deg " +
+                $"tilt={best.tiltDeg:F1}deg h/H={best.hOverH:F3} " +
+                $"viewPreference={viewPreference} characterEuler={characterRoot.eulerAngles} " +
+                $"viewYawOffset={viewYawOffsetDeg:F1} localAzimuth={GetCandidateLocalAzimuth(best.position):F1} " +
+                $"angleScore={best.angleScore:F3} scaleScore={best.scaleScore:F3} viewScore={best.viewScore:F3}"
+            );
         }
 
-        Debug.Log($"[PCCG][FilterStats] dirSamples={totalDirSamples}, distSamples={totalDistanceSamples}, rejectElev={rejectElevation}, rejectView={rejectViewPreference}, rejectCollision={rejectCollision}, rejectLOS={rejectLineOfSight}, rejectGround={rejectGround}, rejectCeiling={rejectCeiling}, rejectInside={rejectInsideSpace}, accepted={accepted}");
+        Debug.Log($"[PCCG][FilterStats] dirSamples={totalDirSamples}, distSamples={totalDistanceSamples}, rejectElev={rejectElevation}, rejectView={rejectViewPreference}, rejectCollision={rejectCollision}, rejectLOS={rejectLineOfSight}, rejectGround={rejectGround}, rejectCeiling={rejectCeiling}, rejectInside={rejectInsideSpace}, rejectScale={rejectScale}, rejectAngle={rejectAngle}, accepted={accepted}");
+    }
+
+    void EnsurePlayableAreaBox()
+    {
+        if (!autoCreatePlayableAreaBoxFromMesh)
+            return;
+
+        if (playableAreaBox != null)
+            return;
+
+        Transform root = playableAreaMeshRoot != null ? playableAreaMeshRoot : meshProxyRoot;
+        if (root == null)
+        {
+            Debug.LogWarning("[PCCG] Cannot auto-create playable area: playableAreaMeshRoot and meshProxyRoot are null.");
+            return;
+        }
+
+        MeshFilter mf = root.GetComponentInChildren<MeshFilter>();
+        if (mf == null || mf.sharedMesh == null)
+        {
+            Debug.LogWarning("[PCCG] Cannot auto-create playable area: MeshFilter/sharedMesh not found.");
+            return;
+        }
+
+        Bounds b = mf.sharedMesh.bounds;
+        Vector3 center = b.center;
+        Vector3 size = b.size;
+
+        size.x *= autoBoxShrinkX;
+        size.z *= autoBoxShrinkZ;
+
+        float groundY = GetGroundReferenceY();
+        Vector3 localGround = mf.transform.InverseTransformPoint(
+            new Vector3(characterRoot.position.x, groundY, characterRoot.position.z)
+        );
+
+        center.y = localGround.y + autoBoxYOffset;
+        size.y = autoBoxHeight;
+
+        GameObject boxObj = new GameObject(playableAreaObjectName);
+        boxObj.transform.position = mf.transform.position;
+        boxObj.transform.rotation = mf.transform.rotation;
+        boxObj.transform.localScale = mf.transform.lossyScale;
+
+        BoxCollider box = boxObj.AddComponent<BoxCollider>();
+        box.isTrigger = true;
+        box.center = center;
+        box.size = size;
+
+        playableAreaBox = box;
+
+        if (logPlayableAreaCorners)
+            LogPlayableAreaBoxCorners(mf, b, center, size);
+
+        Debug.Log(
+            $"[PCCG] Auto-created playableAreaBox from mesh={mf.name}: " +
+            $"boxObject={boxObj.name}, center={center}, size={size}, " +
+            $"shrinkX={autoBoxShrinkX:F2}, shrinkZ={autoBoxShrinkZ:F2}, " +
+            $"height={autoBoxHeight:F2}"
+        );
+    }
+
+    void EnsurePlayableAreaBoxFromFloorVertices()
+    {
+        Transform root = playableAreaMeshRoot != null ? playableAreaMeshRoot : meshProxyRoot;
+        if (root == null)
+        {
+            Debug.LogError("[PCCG] Cannot create playable area: mesh root is null.");
+            return;
+        }
+
+        MeshFilter mf = root.GetComponentInChildren<MeshFilter>();
+        if (mf == null || mf.sharedMesh == null)
+        {
+            Debug.LogError("[PCCG] Cannot create playable area: MeshFilter/sharedMesh not found.");
+            return;
+        }
+
+        float groundY = GetGroundReferenceY();
+
+        List<float> xs = new List<float>();
+        List<float> zs = new List<float>();
+
+        foreach (Vector3 v in mf.sharedMesh.vertices)
+        {
+            Vector3 world = mf.transform.TransformPoint(v);
+
+            if (Mathf.Abs(world.y - groundY) > floorVertexTolerance)
+                continue;
+
+            Vector3 local = mf.transform.InverseTransformPoint(world);
+            xs.Add(local.x);
+            zs.Add(local.z);
+        }
+
+        if (xs.Count < 10)
+        {
+            Debug.LogError("[PCCG] Not enough floor vertices to create playable area. Increase floorVertexTolerance.");
+            return;
+        }
+
+        xs.Sort();
+        zs.Sort();
+
+        int lo = usePercentileBounds ? Mathf.FloorToInt(xs.Count * boundsPercentileTrim / 100f) : 0;
+        int hi = usePercentileBounds ? Mathf.CeilToInt(xs.Count * (1f - boundsPercentileTrim / 100f)) - 1 : xs.Count - 1;
+
+        lo = Mathf.Clamp(lo, 0, xs.Count - 1);
+        hi = Mathf.Clamp(hi, lo + 1, xs.Count - 1);
+
+        float minX = xs[lo];
+        float maxX = xs[hi];
+        float minZ = zs[lo];
+        float maxZ = zs[hi];
+
+        float cx = (minX + maxX) * 0.5f;
+        float cz = (minZ + maxZ) * 0.5f;
+        float sx = (maxX - minX) * floorAreaShrinkX;
+        float sz = (maxZ - minZ) * floorAreaShrinkZ;
+
+        Vector3 localGround = mf.transform.InverseTransformPoint(
+            new Vector3(characterRoot.position.x, groundY, characterRoot.position.z)
+        );
+
+        Vector3 center = new Vector3(
+            cx,
+            localGround.y + playableAreaBottomOffset + playableAreaHeight * 0.5f,
+            cz
+        );
+
+        Vector3 size = new Vector3(
+            Mathf.Max(0.1f, sx),
+            playableAreaHeight,
+            Mathf.Max(0.1f, sz)
+        );
+
+        GameObject boxObj = new GameObject("PlayableCameraArea_FloorAuto");
+        boxObj.transform.SetParent(mf.transform, false);
+        boxObj.transform.localPosition = Vector3.zero;
+        boxObj.transform.localRotation = Quaternion.identity;
+        boxObj.transform.localScale = Vector3.one;
+
+        BoxCollider box = boxObj.AddComponent<BoxCollider>();
+        box.isTrigger = true;
+        box.center = center;
+        box.size = size;
+
+        playableAreaBox = box;
+        useManualPlayableArea = true;
+        drawManualPlayableAreaGizmo = true;
+
+        if (logPlayableAreaCorners)
+            LogPlayableAreaBoxCorners(playableAreaBox);
+
+        Debug.Log($"[PCCG] Floor-based playable area created from {xs.Count} floor vertices. center={center}, size={size}, groundY={groundY}");
+    }
+
+    void LogPlayableAreaBoxCorners(MeshFilter mf, Bounds originalBounds, Vector3 boxCenter, Vector3 boxSize)
+    {
+        Vector3 half = boxSize * 0.5f;
+        Vector3 min = boxCenter - half;
+        Vector3 max = boxCenter + half;
+
+        Vector3[] localCorners =
+        {
+            new Vector3(min.x, min.y, min.z),
+            new Vector3(max.x, min.y, min.z),
+            new Vector3(min.x, max.y, min.z),
+            new Vector3(max.x, max.y, min.z),
+            new Vector3(min.x, min.y, max.z),
+            new Vector3(max.x, min.y, max.z),
+            new Vector3(min.x, max.y, max.z),
+            new Vector3(max.x, max.y, max.z),
+        };
+
+        for (int i = 0; i < localCorners.Length; i++)
+        {
+            Vector3 worldCorner = mf.transform.TransformPoint(localCorners[i]);
+            Debug.Log($"[PCCG] PlayableArea corner {i}: local={localCorners[i]}, world={worldCorner}");
+        }
+    }
+
+    void LogPlayableAreaBoxCorners(BoxCollider box)
+    {
+        Vector3 half = box.size * 0.5f;
+        Vector3 min = box.center - half;
+        Vector3 max = box.center + half;
+
+        Vector3[] localCorners =
+        {
+            new Vector3(min.x, min.y, min.z),
+            new Vector3(max.x, min.y, min.z),
+            new Vector3(min.x, max.y, min.z),
+            new Vector3(max.x, max.y, min.z),
+            new Vector3(min.x, min.y, max.z),
+            new Vector3(max.x, min.y, max.z),
+            new Vector3(min.x, max.y, max.z),
+            new Vector3(max.x, max.y, max.z),
+        };
+
+        for (int i = 0; i < localCorners.Length; i++)
+        {
+            Vector3 worldCorner = box.transform.TransformPoint(localCorners[i]);
+            Debug.Log($"[PCCG] PlayableArea box corner {i}: local={localCorners[i]}, world={worldCorner}");
+        }
+    }
+
+    void InitializeAutoPlayableBounds()
+    {
+        _hasPlayableLocalBounds = false;
+        _playableMeshFilter = null;
+
+        Transform root = playableAreaMeshRoot != null ? playableAreaMeshRoot : meshProxyRoot;
+        if (root == null)
+        {
+            Debug.LogWarning("[PCCG] No playableAreaMeshRoot or meshProxyRoot set. Auto playable bounds disabled.");
+            return;
+        }
+
+        _playableMeshFilter = root.GetComponentInChildren<MeshFilter>();
+        if (_playableMeshFilter == null || _playableMeshFilter.sharedMesh == null)
+        {
+            Debug.LogWarning("[PCCG] No MeshFilter/sharedMesh found for auto playable bounds.");
+            return;
+        }
+
+        Bounds b = _playableMeshFilter.sharedMesh.bounds;
+        Vector3 center = b.center;
+        Vector3 size = b.size;
+
+        size.x *= playableBoundsShrinkX;
+        size.z *= playableBoundsShrinkZ;
+
+        float groundYWorld = GetGroundReferenceY();
+        Vector3 localGround = _playableMeshFilter.transform.InverseTransformPoint(
+            new Vector3(characterRoot.position.x, groundYWorld, characterRoot.position.z)
+        );
+
+        float localMinY = localGround.y + playableBoundsYOffsetMin;
+        float localMaxY = localGround.y + playableBoundsYOffsetMax;
+
+        center.y = (localMinY + localMaxY) * 0.5f;
+        size.y = Mathf.Max(0.1f, localMaxY - localMinY);
+
+        _playableLocalBounds = new Bounds(center, size);
+        _hasPlayableLocalBounds = true;
+
+        Debug.Log(
+            $"[PCCG] Auto playable local bounds initialized: " +
+            $"root={root.name}, meshFilter={_playableMeshFilter.name}, " +
+            $"center={center}, size={size}, " +
+            $"shrinkX={playableBoundsShrinkX:F2}, shrinkZ={playableBoundsShrinkZ:F2}"
+        );
+    }
+
+    bool IsInsideAutoPlayableBounds(Vector3 worldPos)
+    {
+        if (!useAutoPlayableMeshBounds)
+            return true;
+
+        if (!_hasPlayableLocalBounds || _playableMeshFilter == null)
+            return true;
+
+        Vector3 localPos = _playableMeshFilter.transform.InverseTransformPoint(worldPos);
+        return _playableLocalBounds.Contains(localPos);
+    }
+
+    bool IsInsideManualPlayableArea(Vector3 worldPos)
+    {
+        if (!useManualPlayableArea)
+            return true;
+
+        if (playableAreaBox == null)
+        {
+            Debug.LogWarning("[PCCG] useManualPlayableArea is true but playableAreaBox is null. Rejecting candidate.");
+            return false;
+        }
+
+        Transform t = playableAreaBox.transform;
+        Vector3 local = t.InverseTransformPoint(worldPos);
+
+        Vector3 center = playableAreaBox.center;
+        Vector3 half = playableAreaBox.size * 0.5f;
+        Vector3 d = local - center;
+
+        return Mathf.Abs(d.x) <= half.x &&
+               Mathf.Abs(d.y) <= half.y &&
+               Mathf.Abs(d.z) <= half.z;
     }
 
     bool IsInsideSpaceByRaycast(Vector3 pos)
     {
-        // ground-level profile만: 바닥 근처 mesh 구멍으로 새는 것을 막기 위해
-        // AABB 박스(XZ) 밖이면 즉시 제외. 다른 profile은 이 검사 건너뜀.
-        if (isGroundLevelProfile)
+        // 공통: pivot→후보 직선이 환경 mesh에 막히면 공간 밖.
+        Vector3 pivot = GetPivotPoint();
+        Vector3 toCandidate = pos - pivot;
+        float dist = toCandidate.magnitude;
+        if (dist > 0.01f)
         {
-            Vector3 c = _spaceBounds.center;
-            Vector3 e = _spaceBounds.extents;
-            if (pos.x < c.x - e.x || pos.x > c.x + e.x ||
-                pos.z < c.z - e.z || pos.z > c.z + e.z)
+            if (Physics.Raycast(pivot, toCandidate.normalized, dist, environmentLayer))
                 return false;
         }
 
-        // 공통: pivot→후보 직선이 환경 mesh에 막히면 공간 밖.
-        Vector3 pivot = GetPivotPoint();
-        Vector3 dir = pos - pivot;
-        float dist = dir.magnitude;
-        if (dist < 0.01f) return true;
-        if (Physics.Raycast(pivot, dir.normalized, dist, environmentLayer))
+        int hits = 0;
+        float checkDist = Mathf.Max(2.0f, _safeSearchRadius * 1.5f);
+
+        for (int i = 0; i < 8; i++)
+        {
+            float angle = i * 45f * Mathf.Deg2Rad;
+            Vector3 dir = new Vector3(Mathf.Cos(angle), 0f, Mathf.Sin(angle));
+            if (Physics.Raycast(pos, dir, checkDist, environmentLayer))
+                hits++;
+        }
+
+        if (hits < 1)
             return false;
+
+        // ground-level만 추가 검사: 후보 바로 아래에 바닥 mesh가 가까이 있어야 내부.
+        // 방 안이면 아래에 바닥이 있고, 방 밖(벽 너머)이면 아래가 뚫려서 막히는 게 없음.
+        if (isGroundLevelProfile)
+        {
+            float floorProbe = 2.0f; // 후보 아래 2m 안에 바닥이 있으면 방 안으로 간주
+            if (!Physics.Raycast(pos, Vector3.down, floorProbe, environmentLayer))
+                return false;
+        }
 
         return true;
     }
@@ -672,18 +1059,115 @@ public class CameraCandidateGenerator : MonoBehaviour
 
     bool PassesViewPreference(Vector3 dir)
     {
-        if (viewPreference == "unspecified") return true;
-        float az = Mathf.Atan2(dir.x, dir.z) * Mathf.Rad2Deg;
-        switch (viewPreference)
+        string pref = string.IsNullOrEmpty(viewPreference)
+            ? "unspecified"
+            : viewPreference.Trim().ToLowerInvariant();
+        if (pref == "unspecified")
+            return true;
+        if (characterRoot == null)
+            return true;
+
+        float az = GetLocalAzimuthFromDirection(dir);
+        switch (pref)
         {
-            case "front":                return Mathf.Abs(az) < 45f;
-            case "back":                 return Mathf.Abs(az) > 135f;
-            case "left":                 return az > -135f && az < -45f;
-            case "right":               return az > 45f && az < 135f;
-            case "three_quarter_front": return Mathf.Abs(az) > 22.5f && Mathf.Abs(az) < 67.5f;
-            case "three_quarter_back":  return Mathf.Abs(az) > 112.5f && Mathf.Abs(az) < 157.5f;
-            default: return true;
+            case "front":
+                return Mathf.Abs(Mathf.DeltaAngle(az, 0f)) <= viewConeHalfAngle;
+            case "back":
+                return Mathf.Abs(Mathf.DeltaAngle(az, 180f)) <= viewConeHalfAngle;
+            case "left":
+                return Mathf.Abs(Mathf.DeltaAngle(az, -90f)) <= viewConeHalfAngle;
+            case "right":
+                return Mathf.Abs(Mathf.DeltaAngle(az, 90f)) <= viewConeHalfAngle;
+            case "three_quarter_front":
+                return MinAbsDeltaAngle(az, -45f, 45f) <= quarterViewHalfAngle;
+            case "three_quarter_back":
+                return MinAbsDeltaAngle(az, -135f, 135f) <= quarterViewHalfAngle;
+            default:
+                return true;
         }
+    }
+
+    float ComputeViewPreferenceScore(Vector3 candidatePos)
+    {
+        string pref = string.IsNullOrEmpty(viewPreference)
+            ? "unspecified"
+            : viewPreference.Trim().ToLowerInvariant();
+        if (pref == "unspecified")
+            return 1f;
+        if (characterRoot == null)
+            return 1f;
+
+        float az = GetCandidateLocalAzimuth(candidatePos);
+        float halfAngle;
+        float diff;
+
+        switch (pref)
+        {
+            case "front":
+                halfAngle = viewConeHalfAngle;
+                diff = Mathf.Abs(Mathf.DeltaAngle(az, 0f));
+                break;
+            case "back":
+                halfAngle = viewConeHalfAngle;
+                diff = Mathf.Abs(Mathf.DeltaAngle(az, 180f));
+                break;
+            case "left":
+                halfAngle = viewConeHalfAngle;
+                diff = Mathf.Abs(Mathf.DeltaAngle(az, -90f));
+                break;
+            case "right":
+                halfAngle = viewConeHalfAngle;
+                diff = Mathf.Abs(Mathf.DeltaAngle(az, 90f));
+                break;
+            case "three_quarter_front":
+                halfAngle = quarterViewHalfAngle;
+                diff = MinAbsDeltaAngle(az, -45f, 45f);
+                break;
+            case "three_quarter_back":
+                halfAngle = quarterViewHalfAngle;
+                diff = MinAbsDeltaAngle(az, -135f, 135f);
+                break;
+            default:
+                return 1f;
+        }
+
+        return Mathf.Clamp01(1f - diff / Mathf.Max(halfAngle, 0.001f));
+    }
+
+    float GetCandidateLocalAzimuth(Vector3 candidatePos)
+    {
+        Vector3 dir = candidatePos - GetPivotPoint();
+        return GetLocalAzimuthFromDirection(dir);
+    }
+
+    float GetLocalAzimuthFromDirection(Vector3 dir)
+    {
+        dir.y = 0f;
+        if (dir.sqrMagnitude < 0.0001f)
+            return 0f;
+        dir.Normalize();
+
+        Vector3 localDir = useCharacterLocalViewPreference && characterRoot != null
+            ? characterRoot.InverseTransformDirection(dir)
+            : dir;
+
+        localDir.y = 0f;
+        if (localDir.sqrMagnitude < 0.0001f)
+            return 0f;
+        localDir.Normalize();
+
+        if (Mathf.Abs(viewYawOffsetDeg) > 0.001f)
+            localDir = Quaternion.Euler(0f, -viewYawOffsetDeg, 0f) * localDir;
+
+        return Mathf.Atan2(localDir.x, localDir.z) * Mathf.Rad2Deg;
+    }
+
+    float MinAbsDeltaAngle(float angle, float targetA, float targetB)
+    {
+        return Mathf.Min(
+            Mathf.Abs(Mathf.DeltaAngle(angle, targetA)),
+            Mathf.Abs(Mathf.DeltaAngle(angle, targetB))
+        );
     }
 
     float ComputeCameraTiltDeg(Vector3 cameraPos, Vector3 targetPos)
@@ -718,9 +1202,16 @@ public class CameraCandidateGenerator : MonoBehaviour
     {
         trajectoryCandidates.Clear();
 
-        if (topCandidates == null || topCandidates.Count < 2)
+        if (topCandidates == null || topCandidates.Count == 0)
         {
-            Debug.LogWarning("[PCCG] Need at least 2 placement candidates for trajectory generation.");
+            Debug.LogWarning("[PCCG] No placement candidates for trajectory generation.");
+            return;
+        }
+
+        if (topCandidates.Count < 2)
+        {
+            Debug.LogWarning("[PCCG] Only one placement candidate. Trajectory skipped, applying static placement fallback.");
+            ApplyBestCandidate();
             return;
         }
 
@@ -764,6 +1255,7 @@ public class CameraCandidateGenerator : MonoBehaviour
             Debug.Log($"[PCCG] Traj#{i} score={traj.trajectoryScore:F3} " +
                       $"collision={traj.collisionPenalty:F3} " +
                       $"visibility={traj.visibilityPenalty:F3} " +
+                      $"outside={traj.outsideSpacePenalty:F3} " +
                       $"smoothness={traj.smoothnessScore:F3}");
         }
 
@@ -1031,6 +1523,27 @@ public class CameraCandidateGenerator : MonoBehaviour
         }
     }
 
+    void DrawManualPlayableAreaGizmo()
+    {
+        if (!drawManualPlayableAreaGizmo || playableAreaBox == null)
+            return;
+
+        Matrix4x4 oldMatrix = Gizmos.matrix;
+        Color oldColor = Gizmos.color;
+
+        Gizmos.matrix = playableAreaBox.transform.localToWorldMatrix;
+        Gizmos.color = Color.yellow;
+        Gizmos.DrawWireCube(playableAreaBox.center, playableAreaBox.size);
+
+        Gizmos.matrix = oldMatrix;
+        Gizmos.color = oldColor;
+    }
+
+    void OnDrawGizmosSelected()
+    {
+        return;
+    }
+
     public void ApplyProfileAndGenerate(IntentOutputData output)
     {
         var prof = output.profile;
@@ -1111,6 +1624,35 @@ public class CameraCandidateGenerator : MonoBehaviour
         ApplyCameraFOV();
         GenerateCandidates();
 
+        string appliedViewPreference = string.IsNullOrEmpty(viewPreference)
+            ? "unspecified"
+            : viewPreference.Trim().ToLowerInvariant();
+
+        if (!isBirdsEyeProfile &&
+            topCandidates.Count < 2 &&
+            appliedViewPreference != "unspecified")
+        {
+            float oldViewConeHalfAngle = viewConeHalfAngle;
+            float oldQuarterViewHalfAngle = quarterViewHalfAngle;
+            int oldSampleCount = sampleCount;
+
+            viewConeHalfAngle = Mathf.Max(viewConeHalfAngle, 95f);
+            quarterViewHalfAngle = Mathf.Max(quarterViewHalfAngle, 70f);
+            sampleCount = Mathf.Max(sampleCount, 600);
+
+            Debug.Log(
+                $"[PCCG] Too few candidates ({topCandidates.Count}) with viewPreference={viewPreference}. " +
+                $"Retrying with relaxed view cones: viewCone={viewConeHalfAngle:F1}, " +
+                $"quarterCone={quarterViewHalfAngle:F1}, sampleCount={sampleCount}."
+            );
+
+            GenerateCandidates();
+
+            viewConeHalfAngle = oldViewConeHalfAngle;
+            quarterViewHalfAngle = oldQuarterViewHalfAngle;
+            sampleCount = oldSampleCount;
+        }
+
         if (isBirdsEyeProfile)
         {
             // Bird's eye: trajectory 생성/재생 없이 static placement만 적용
@@ -1121,7 +1663,8 @@ public class CameraCandidateGenerator : MonoBehaviour
         {
             // 일반/ground-level: placement + top-k trajectory 생성 및 재생
             GenerateTrajectoryCandidates();
-            PlayBestTrajectory();
+            if (trajectoryCandidates != null && trajectoryCandidates.Count > 0)
+                PlayBestTrajectory();
         }
     }
 }
