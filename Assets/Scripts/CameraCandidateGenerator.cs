@@ -27,6 +27,9 @@ public class CameraCandidateGenerator : MonoBehaviour
     [Tooltip("Man01 head bone (for head/face anchor)")]
     public Transform headBone;
 
+    [Tooltip("Optional head/face mesh root used to measure Cherif h/H face height.")]
+    public Transform headMeshRoot;
+
     [Tooltip("Main preview camera")]
     public Camera previewCamera;
 
@@ -58,6 +61,9 @@ public class CameraCandidateGenerator : MonoBehaviour
     public float hOverH_max = 0.13f;
     public string focusAnchor = "full_body";
     public string viewPreference = "unspecified";
+    public bool useFaceHeightForShotScale = true;
+    public float fallbackFaceHeightRatio = 0.13f;
+    public string lookTargetMode = "upper_body";
 
     [Header("Internal Sampling Ranges")]
     public float sampleElevationMin = -35f;
@@ -148,6 +154,7 @@ public class CameraCandidateGenerator : MonoBehaviour
         public float collisionPenalty;
         public float visibilityPenalty;
         public float smoothnessScore;
+        public float outsideSpacePenalty;
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -164,7 +171,18 @@ public class CameraCandidateGenerator : MonoBehaviour
             return;
         }
 
-        Vector3 anchorPos = GetAnchorPosition();
+        Vector3 pivotPoint = GetPivotPoint();
+        Vector3 lookTargetPoint = GetLookTargetPoint();
+
+        Debug.Log(
+            "[PCCG] Tilt convention: ComputeCameraTiltDeg(camera,target) is negative when " +
+            "the camera looks downward from above and positive when it looks upward from below. " +
+            "Profile angle high/low signs may be opposite in the source table; this code does not flip them."
+        );
+        Debug.Log(
+            $"[PCCG] Target split: pivot={pivotPoint}, lookTarget={lookTargetPoint}, " +
+            $"lookTargetMode={lookTargetMode}, referenceHeight={GetReferenceSubjectHeight():F3}m"
+        );
 
         if (isGroundLevelProfile)
         {
@@ -201,14 +219,14 @@ public class CameraCandidateGenerator : MonoBehaviour
         }
         else
         {
-            _spaceBounds = new Bounds(anchorPos, Vector3.one * 20f);
+            _spaceBounds = new Bounds(pivotPoint, Vector3.one * 20f);
             _safeSearchRadius = 8f;
             Debug.LogWarning("[PCCG] meshProxyRoot not set. Using fallback bounds.");
         }
 
         // ── 천장 높이 계산 ──────────────────────────────────────────────────
         float ceilingY = float.MaxValue;
-        if (Physics.Raycast(anchorPos + Vector3.up * 0.1f, Vector3.up,
+        if (Physics.Raycast(pivotPoint + Vector3.up * 0.1f, Vector3.up,
             out RaycastHit ceilHit, 20f, environmentLayer))
         {
             ceilingY = ceilHit.point.y - 0.3f;
@@ -216,7 +234,7 @@ public class CameraCandidateGenerator : MonoBehaviour
         }
         else
         {
-            Debug.Log("[PCCG] No ceiling detected above anchor.");
+            Debug.Log("[PCCG] No ceiling detected above pivot.");
         }
 
         // ── Step 1: h/H → D 변환 ────────────────────────────────────────────
@@ -293,7 +311,7 @@ public class CameraCandidateGenerator : MonoBehaviour
                 totalDistanceSamples++;
                 float t = (di + 1) / 4f;
                 float D = Mathf.Lerp(D_min, D_max, t);
-                Vector3 candidatePos = anchorPos + dir * D;
+                Vector3 candidatePos = pivotPoint + dir * D;
 
                 // ── Step 3: 공간 제약 필터링 ──────────────────────────────────
 
@@ -302,7 +320,7 @@ public class CameraCandidateGenerator : MonoBehaviour
                 { rejectCollision++; continue; }
 
                 // 3b. 캐릭터가 보이지 않는 위치 제거
-                if (!HasLineOfSight(candidatePos, anchorPos))
+                if (!HasLineOfSight(candidatePos, lookTargetPoint))
                 { rejectLineOfSight++; continue; }
 
                 // 3c. 바닥 아래 위치 제거 (ground-level profile은 상대 높이로 별도 처리)
@@ -322,20 +340,20 @@ public class CameraCandidateGenerator : MonoBehaviour
                     { rejectGround++; continue; }
                 }
 
-                // 3d. AABB 대신 다방향 raycast로 공간 내부 확인.
+                // 3d. pivot→후보 직선이 벽에 막히면 공간 밖이므로 제외.
                 if (!IsInsideSpaceByRaycast(candidatePos)) { rejectInsideSpace++; continue; }
 
                 // ── Step 4: 실제 h/H 계산 (scoring용) ───────────────────────
-                float actualDist = Vector3.Distance(candidatePos, anchorPos);
+                float actualDist = Vector3.Distance(candidatePos, lookTargetPoint);
                 float actualHOverH = subjectHeightM / (2f * actualDist * tanHalfFov);
 
                 // ── Step 5: Scoring ───────────────────────────────────────────
-                float tiltDeg = ComputeCameraTiltDeg(candidatePos, anchorPos);
+                float tiltDeg = ComputeCameraTiltDeg(candidatePos, lookTargetPoint);
                 float angleScore = ComputeAngleScore(tiltDeg);
                 float scaleScore = ComputeScaleScore(actualHOverH);
                 float totalScore = angleScore * anglePriority * 0.5f + scaleScore * 0.5f;
 
-                Quaternion lookRot = Quaternion.LookRotation(anchorPos - candidatePos, Vector3.up);
+                Quaternion lookRot = Quaternion.LookRotation(lookTargetPoint - candidatePos, Vector3.up);
 
                 validCandidates.Add(new CameraCandidate
                 {
@@ -372,43 +390,28 @@ public class CameraCandidateGenerator : MonoBehaviour
         Debug.Log($"[PCCG][FilterStats] dirSamples={totalDirSamples}, distSamples={totalDistanceSamples}, rejectElev={rejectElevation}, rejectView={rejectViewPreference}, rejectCollision={rejectCollision}, rejectLOS={rejectLineOfSight}, rejectGround={rejectGround}, rejectCeiling={rejectCeiling}, rejectInside={rejectInsideSpace}, accepted={accepted}");
     }
 
-    // ═══════════════════════════════════════════════════════════════════════
-    // ★ FIX 3: 다방향 Raycast로 공간 내부 판단
-    //
-    // 배경:
-    //   MeshProxyRoot가 Y축 43.876도 회전되어 있어서
-    //   Renderer.bounds(AABB)가 실제 공간보다 훨씬 큰 박스를 반환함.
-    //   → bounds.Contains()를 쓰면 실제 방 밖의 모서리 공간도 통과시킴.
-    //
-    // 해결:
-    //   후보 위치에서 수평 8방향으로 ray를 쏴서
-    //   환경 mesh(벽/바닥/천장)와의 충돌 수를 확인.
-    //   방 안에 있으면 주변에 벽이 있어서 많은 방향에서 충돌이 일어남.
-    //   방 밖에 있으면 벽이 없는 방향이 많아서 충돌이 적음.
-    // ═══════════════════════════════════════════════════════════════════════
     bool IsInsideSpaceByRaycast(Vector3 pos)
     {
-        Vector3 anchor = GetAnchorPosition();
-
-        // 근거리는 visibility check를 통과했으므로 내부로 간주
-        // 기존 1.5m에서 3.0m로 확대 (sampling D_min이 0.8m여서 실제 샘플 최소값이 2.5m임)
-        if (Vector3.Distance(pos, anchor) < 3.0f)
-            return true;
-
-        int hits = 0;
-        float checkDist = _safeSearchRadius * 2f;
-
-        for (int i = 0; i < 8; i++)
+        // ground-level profile만: 바닥 근처 mesh 구멍으로 새는 것을 막기 위해
+        // AABB 박스(XZ) 밖이면 즉시 제외. 다른 profile은 이 검사 건너뜀.
+        if (isGroundLevelProfile)
         {
-            float angle = i * 45f * Mathf.Deg2Rad;
-            Vector3 dir = new Vector3(Mathf.Cos(angle), 0f, Mathf.Sin(angle));
-            if (Physics.Raycast(pos, dir, checkDist, environmentLayer))
-                hits++;
+            Vector3 c = _spaceBounds.center;
+            Vector3 e = _spaceBounds.extents;
+            if (pos.x < c.x - e.x || pos.x > c.x + e.x ||
+                pos.z < c.z - e.z || pos.z > c.z + e.z)
+                return false;
         }
 
-        // 불완전한 mesh와 복도 입구를 감안해 threshold를 1로 낮춤
-        // (복도 공간은 양쪽 벽 중 하나만 있어도 내부로 판단)
-        return hits >= 1;
+        // 공통: pivot→후보 직선이 환경 mesh에 막히면 공간 밖.
+        Vector3 pivot = GetPivotPoint();
+        Vector3 dir = pos - pivot;
+        float dist = dir.magnitude;
+        if (dist < 0.01f) return true;
+        if (Physics.Raycast(pivot, dir.normalized, dist, environmentLayer))
+            return false;
+
+        return true;
     }
 
     public void ApplyBestCandidate()
@@ -476,30 +479,72 @@ public class CameraCandidateGenerator : MonoBehaviour
 
     Vector3 GetAnchorPosition()
     {
-        if (focusAnchor == "head" && headBone != null)
-            return headBone.position;
-        if (focusAnchor == "upper_body" && headBone != null)
-            return Vector3.Lerp(characterRoot.position, headBone.position, 0.6f);
+        return GetLookTargetPoint();
+    }
 
+    Vector3 GetPivotPoint()
+    {
         float characterHeight = GetCharacterWorldHeight();
+        return characterRoot.position + Vector3.up * (characterHeight * 0.5f);
+    }
 
-        float heightRatio;
-        switch (focusAnchor)
+    Vector3 GetLookTargetPoint()
+    {
+        float characterHeight = GetCharacterWorldHeight();
+        return characterRoot.position + Vector3.up * (characterHeight * GetLookTargetHeightRatio());
+    }
+
+    float GetLookTargetHeightRatio()
+    {
+        switch ((lookTargetMode ?? string.Empty).ToLowerInvariant())
         {
-            case "head":
-            case "face":       heightRatio = 0.88f; break;
-            case "upper_body": heightRatio = 0.65f; break;
-            case "full_body":  heightRatio = 0.62f; break;
-            case "feet":       heightRatio = 0.05f; break;
-            default:           heightRatio = 0.50f; break;
-        }
+            // XCU + CU: close-up group.
+            case "xcu_cu":
+            case "close_up":
+            case "face_eye":
+            case "eye":
+            case "eyes":
+            case "face":
+                return 0.90f;
 
-        return characterRoot.position + Vector3.up * (characterHeight * heightRatio);
+            // MCU + MS: medium group.
+            case "mcu_ms":
+            case "medium":
+            case "face_upper_body":
+                return 0.82f;
+
+            // MLS: wide shot group.
+            case "mls":
+            case "wide":
+            case "upper_body":
+                return 0.67f;
+
+            // XLS + LS: long shot group.
+            case "xls_ls":
+            case "ls":
+            case "long":
+            case "torso_upper":
+            case "torso":
+                return 0.62f;
+
+            // Optional pure XLS mode.
+            case "xls":
+            case "body_center":
+            case "body":
+                return 0.50f;
+
+            default:
+                return 0.67f;
+        }
     }
 
     float GetReferenceSubjectHeight()
     {
         float characterHeight = GetCharacterWorldHeight();
+
+        if (useFaceHeightForShotScale)
+            return GetFaceHeight();
+
         switch (focusAnchor)
         {
             case "head":
@@ -509,6 +554,66 @@ public class CameraCandidateGenerator : MonoBehaviour
             case "feet":       return characterHeight * 0.20f;
             default:           return characterHeight;
         }
+    }
+
+    float GetFaceHeight()
+    {
+        if (headMeshRoot != null)
+        {
+            Renderer[] renderers = headMeshRoot.GetComponentsInChildren<Renderer>();
+            if (renderers != null && renderers.Length > 0)
+            {
+                Bounds bounds = renderers[0].bounds;
+                foreach (var r in renderers)
+                    bounds.Encapsulate(r.bounds);
+                if (bounds.size.y > 0.001f)
+                    return bounds.size.y;
+            }
+
+            Collider[] colliders = headMeshRoot.GetComponentsInChildren<Collider>();
+            if (colliders != null && colliders.Length > 0)
+            {
+                Bounds bounds = colliders[0].bounds;
+                foreach (var c in colliders)
+                    bounds.Encapsulate(c.bounds);
+                if (bounds.size.y > 0.001f)
+                    return bounds.size.y;
+            }
+        }
+
+        return GetCharacterWorldHeight() * Mathf.Max(0.001f, fallbackFaceHeightRatio);
+    }
+
+    string InferLookTargetModeFromShotScale(float min, float max)
+    {
+        // XCU + CU: profile p h/H = 0.65-0.95.
+        if (min >= 0.65f)
+            return "xcu_cu";
+
+        // MCU + MS: profile p h/H = 0.24-0.65.
+        if (min >= 0.24f && max <= 0.65f)
+            return "mcu_ms";
+
+        // MLS: profile p h/H = 0.15-0.24.
+        if (min >= 0.15f && max <= 0.24f)
+            return "mls";
+
+        // XLS + LS: profile p h/H = 0.03-0.15.
+        if (min >= 0.03f && max <= 0.15f)
+            return "xls_ls";
+
+        // Optional pure XLS mode.
+        if (max <= 0.05f)
+            return "xls";
+
+        float center = (min + max) * 0.5f;
+
+        if (center >= 0.65f) return "xcu_cu";
+        if (center >= 0.24f) return "mcu_ms";
+        if (center >= 0.15f) return "mls";
+        if (center >= 0.03f) return "xls_ls";
+
+        return "xls";
     }
 
     float GetCharacterWorldHeight()
@@ -583,6 +688,9 @@ public class CameraCandidateGenerator : MonoBehaviour
 
     float ComputeCameraTiltDeg(Vector3 cameraPos, Vector3 targetPos)
     {
+        // Convention note for VRST/profile tables:
+        // target below a high camera => negative tilt; target above a low camera => positive tilt.
+        // Some angle profile tables may label high/low with the opposite sign. Do not flip signs here.
         Vector3 dir = (targetPos - cameraPos).normalized;
         return Mathf.Asin(Mathf.Clamp(dir.y, -1f, 1f)) * Mathf.Rad2Deg;
     }
@@ -669,14 +777,14 @@ public class CameraCandidateGenerator : MonoBehaviour
     {
         CameraTrajectory traj = new CameraTrajectory();
         traj.endCandidate = endCandidate;
-        Vector3 anchorPos = GetAnchorPosition();
+        Vector3 lookTargetPoint = GetLookTargetPoint();
         Vector3 mid = (startPos + endPos) * 0.5f;
         Vector3 control = mid + Vector3.up * splineArcHeight;
         for (int i = 0; i < trajectorySampleCount; i++)
         {
             float t = i / (float)(trajectorySampleCount - 1);
             Vector3 pos = QuadraticBezier(startPos, control, endPos, t);
-            Quaternion rot = Quaternion.LookRotation(anchorPos - pos, Vector3.up);
+            Quaternion rot = Quaternion.LookRotation(lookTargetPoint - pos, Vector3.up);
             traj.positions.Add(pos);
             traj.rotations.Add(rot);
         }
@@ -688,14 +796,14 @@ public class CameraCandidateGenerator : MonoBehaviour
         if (traj == null || traj.positions.Count == 0) return false;
         if (rejectCollidingTrajectory && traj.collisionPenalty > 0f) return false;
         if (traj.visibilityPenalty > 0.25f) return false;
+        if (traj.outsideSpacePenalty > 0f) return false;
         if (PassesTooCloseToCharacter(traj)) return false;
         return true;
     }
 
     bool PassesTooCloseToCharacter(CameraTrajectory traj)
     {
-        Vector3 characterCenter = characterRoot.position +
-            Vector3.up * (GetCharacterWorldHeight() * 0.5f);
+        Vector3 characterCenter = GetPivotPoint();
         foreach (Vector3 pos in traj.positions)
         {
             Vector3 flatPos = new Vector3(pos.x, 0f, pos.z);
@@ -713,26 +821,27 @@ public class CameraCandidateGenerator : MonoBehaviour
     {
         CameraTrajectory traj = new CameraTrajectory();
         traj.endCandidate = endCandidate;
-        Vector3 anchorPos = GetAnchorPosition();
+        Vector3 pivotPoint = GetPivotPoint();
+        Vector3 lookTargetPoint = GetLookTargetPoint();
         Vector3 mid = (startPos + endPos) * 0.5f;
         Vector3 pathDir = endPos - startPos;
         pathDir.y = 0f;
         if (pathDir.sqrMagnitude < 0.001f) pathDir = characterRoot.forward;
         pathDir.Normalize();
         Vector3 sideDir = Vector3.Cross(Vector3.up, pathDir).normalized * sideSign;
-        Vector3 awayFromAnchor = mid - anchorPos;
-        awayFromAnchor.y = 0f;
-        if (awayFromAnchor.sqrMagnitude > 0.001f) awayFromAnchor.Normalize();
-        else awayFromAnchor = sideDir;
+        Vector3 awayFromPivot = mid - pivotPoint;
+        awayFromPivot.y = 0f;
+        if (awayFromPivot.sqrMagnitude > 0.001f) awayFromPivot.Normalize();
+        else awayFromPivot = sideDir;
         Vector3 control = mid
             + sideDir * sideOffset
-            + awayFromAnchor * avoidOffset
+            + awayFromPivot * avoidOffset
             + Vector3.up * splineArcHeight;
         for (int i = 0; i < trajectorySampleCount; i++)
         {
             float t = i / (float)(trajectorySampleCount - 1);
             Vector3 pos = QuadraticBezier(startPos, control, endPos, t);
-            Quaternion rot = Quaternion.LookRotation(anchorPos - pos, Vector3.up);
+            Quaternion rot = Quaternion.LookRotation(lookTargetPoint - pos, Vector3.up);
             traj.positions.Add(pos);
             traj.rotations.Add(rot);
         }
@@ -750,16 +859,20 @@ public class CameraCandidateGenerator : MonoBehaviour
         if (traj.positions.Count == 0) { traj.trajectoryScore = 0f; return; }
         float collisionPenalty = 0f;
         float visibilityPenalty = 0f;
-        Vector3 anchorPos = GetAnchorPosition();
+        Vector3 lookTargetPoint = GetLookTargetPoint();
         LayerMask combinedTraj = environmentLayer | characterLayer;
+        float outsidePenalty = 0f;
         for (int i = 0; i < traj.positions.Count; i++)
         {
             Vector3 pos = traj.positions[i];
             if (Physics.CheckSphere(pos, COLLISION_RADIUS, combinedTraj)) collisionPenalty += 1f;
-            if (!HasLineOfSight(pos, anchorPos)) visibilityPenalty += 1f;
+            if (!HasLineOfSight(pos, lookTargetPoint)) visibilityPenalty += 1f;
+            if (!IsInsideSpaceByRaycast(pos)) outsidePenalty += 1f;
         }
         collisionPenalty /= traj.positions.Count;
         visibilityPenalty /= traj.positions.Count;
+        outsidePenalty /= traj.positions.Count;
+        traj.outsideSpacePenalty = outsidePenalty;
         float smoothnessScore = ComputeSmoothnessScore(traj);
         float endPlacementScore = traj.endCandidate != null ? traj.endCandidate.totalScore : 0f;
         traj.trajectoryScore = endPlacementScore * 0.55f + smoothnessScore * 0.25f
@@ -896,19 +1009,25 @@ public class CameraCandidateGenerator : MonoBehaviour
 
     void OnDrawGizmos()
     {
-        if (topCandidates == null || topCandidates.Count == 0) return;
-        for (int i = 0; i < topCandidates.Count; i++)
+        if (topCandidates != null)
         {
-            var c = topCandidates[i];
-            float t = 1f - (float)i / Mathf.Max(topCandidates.Count - 1, 1);
-            Gizmos.color = Color.Lerp(Color.blue, Color.red, t);
-            Gizmos.DrawSphere(c.position, 0.12f);
-            Gizmos.DrawRay(c.position, c.rotation * Vector3.forward * 0.4f);
+            for (int i = 0; i < topCandidates.Count; i++)
+            {
+                var c = topCandidates[i];
+                float t = 1f - (float)i / Mathf.Max(topCandidates.Count - 1, 1);
+                Gizmos.color = Color.Lerp(Color.green, Color.magenta, t);
+                Gizmos.DrawSphere(c.position, 0.12f);
+                Gizmos.DrawRay(c.position, c.rotation * Vector3.forward * 0.4f);
+            }
         }
+
         if (characterRoot != null)
         {
-            Gizmos.color = Color.yellow;
-            Gizmos.DrawWireSphere(GetAnchorPosition(), 0.08f);
+            Gizmos.color = Color.red;
+            Gizmos.DrawSphere(GetPivotPoint(), 0.08f);
+
+            Gizmos.color = Color.blue;
+            Gizmos.DrawSphere(GetLookTargetPoint(), 0.08f);
         }
     }
 
@@ -928,8 +1047,11 @@ public class CameraCandidateGenerator : MonoBehaviour
 
         if (prof.subject_scale_range != null)
         {
+            // Cherif h/H: h is face height and H is frame height.
+            // Shot scale is controlled by this range; lookTargetMode only sets the gaze center.
             hOverH_min = prof.subject_scale_range.min;
             hOverH_max = prof.subject_scale_range.max;
+            lookTargetMode = InferLookTargetModeFromShotScale(hOverH_min, hOverH_max);
         }
 
         focusAnchor    = prof.default_focus_anchor ?? "full_body";
@@ -982,7 +1104,8 @@ public class CameraCandidateGenerator : MonoBehaviour
 
         Debug.Log($"[PCCG] Profile applied: {output.effect_class} " +
                   $"elev=[{elevationMin},{elevationMax}] " +
-                  $"h/H=[{hOverH_min:F3},{hOverH_max:F3}]");
+                  $"h/H=[{hOverH_min:F3},{hOverH_max:F3}] " +
+                  $"lookTargetMode={lookTargetMode}");
 
         // FOV가 h/H 계산에 영향을 주므로 후보 생성 전에 먼저 적용
         ApplyCameraFOV();
