@@ -46,6 +46,12 @@ public class CameraCandidateGenerator : MonoBehaviour
     // ★ FIX: 회전된 mesh의 AABB 오류를 보정하기 위한 내부 탐색 반경
     private float _safeSearchRadius = 8f;
 
+    // [진단용] IsInsideSpaceByRaycast 단계별 reject 카운터
+    private int _dbgRayBlocked = 0;
+    private int _dbgHitsZero   = 0;
+    private int _dbgFloorFail  = 0;
+    private int _dbgInsidePass = 0;
+
     [Header("Manual Playable Camera Area")]
     public BoxCollider playableAreaBox;
     public bool useManualPlayableArea = false;
@@ -213,6 +219,10 @@ public class CameraCandidateGenerator : MonoBehaviour
     public void GenerateCandidates()
     {
         topCandidates.Clear();
+        _dbgRayBlocked = 0;
+        _dbgHitsZero   = 0;
+        _dbgFloorFail  = 0;
+        _dbgInsidePass = 0;
 
         if (characterRoot == null || previewCamera == null)
         {
@@ -222,6 +232,8 @@ public class CameraCandidateGenerator : MonoBehaviour
 
         Vector3 pivotPoint = GetPivotPoint();
         Vector3 lookTargetPoint = GetLookTargetPoint();
+
+        Debug.Log($"[PCCG][PivotDbg] pivotInsideEnvCollider={Physics.CheckSphere(pivotPoint, 0.05f, environmentLayer)}, pivot={pivotPoint}");
 
         Debug.Log(
             "[PCCG] Tilt convention: ComputeCameraTiltDeg(camera,target) is negative when " +
@@ -473,6 +485,7 @@ public class CameraCandidateGenerator : MonoBehaviour
         }
 
         Debug.Log($"[PCCG][FilterStats] dirSamples={totalDirSamples}, distSamples={totalDistanceSamples}, rejectElev={rejectElevation}, rejectView={rejectViewPreference}, rejectCollision={rejectCollision}, rejectLOS={rejectLineOfSight}, rejectGround={rejectGround}, rejectCeiling={rejectCeiling}, rejectInside={rejectInsideSpace}, rejectScale={rejectScale}, rejectAngle={rejectAngle}, accepted={accepted}");
+        Debug.Log($"[PCCG][InsideDbg] rayBlocked={_dbgRayBlocked}, hitsZero={_dbgHitsZero}, floorFail={_dbgFloorFail}, insidePass={_dbgInsidePass}");
     }
 
     void EnsurePlayableAreaBox()
@@ -772,22 +785,32 @@ public class CameraCandidateGenerator : MonoBehaviour
         if (dist > 0.01f)
         {
             if (Physics.Raycast(pivot, toCandidate.normalized, dist, environmentLayer))
+            {
+                _dbgRayBlocked++;
                 return false;
+            }
         }
 
         int hits = 0;
         float checkDist = Mathf.Max(2.0f, _safeSearchRadius * 1.5f);
 
+        // 후보 위치의 Y 대신 pivot Y에서 수평 ray를 쏴서,
+        // 천장이 낮은 방에서 후보가 높거나 낮을 때 벽 높이대를 빗나가는 문제 방지.
+        Vector3 pivotForProbe = GetPivotPoint();
+        Vector3 probeOrigin = new Vector3(pos.x, pivotForProbe.y, pos.z);
         for (int i = 0; i < 8; i++)
         {
             float angle = i * 45f * Mathf.Deg2Rad;
             Vector3 dir = new Vector3(Mathf.Cos(angle), 0f, Mathf.Sin(angle));
-            if (Physics.Raycast(pos, dir, checkDist, environmentLayer))
+            if (Physics.Raycast(probeOrigin, dir, checkDist, environmentLayer))
                 hits++;
         }
 
         if (hits < 1)
+        {
+            _dbgHitsZero++;
             return false;
+        }
 
         // ground-level만 추가 검사: 후보 바로 아래에 바닥 mesh가 가까이 있어야 내부.
         // 방 안이면 아래에 바닥이 있고, 방 밖(벽 너머)이면 아래가 뚫려서 막히는 게 없음.
@@ -795,9 +818,13 @@ public class CameraCandidateGenerator : MonoBehaviour
         {
             float floorProbe = 2.0f; // 후보 아래 2m 안에 바닥이 있으면 방 안으로 간주
             if (!Physics.Raycast(pos, Vector3.down, floorProbe, environmentLayer))
+            {
+                _dbgFloorFail++;
                 return false;
+            }
         }
 
+        _dbgInsidePass++;
         return true;
     }
 
