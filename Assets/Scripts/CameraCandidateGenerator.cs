@@ -134,6 +134,10 @@ public class CameraCandidateGenerator : MonoBehaviour
     [Header("Output (read-only)")]
     public List<CameraCandidate> topCandidates = new List<CameraCandidate>();
 
+    [Header("Candidate Preview")]
+    public bool enableNumberKeyCandidatePreview = true;
+    public int currentPreviewCandidateIndex = -1;
+
     [Header("Trajectory Output (read-only)")]
     public List<CameraTrajectory> trajectoryCandidates = new List<CameraTrajectory>();
 
@@ -211,6 +215,23 @@ public class CameraCandidateGenerator : MonoBehaviour
         public float visibilityPenalty;
         public float smoothnessScore;
         public float outsideSpacePenalty;
+    }
+
+    void Update()
+    {
+        if (!enableNumberKeyCandidatePreview)
+            return;
+
+        if (Input.GetKeyDown(KeyCode.Alpha1) || Input.GetKeyDown(KeyCode.Keypad1))
+            ApplyCandidateByIndex(0);
+        else if (Input.GetKeyDown(KeyCode.Alpha2) || Input.GetKeyDown(KeyCode.Keypad2))
+            ApplyCandidateByIndex(1);
+        else if (Input.GetKeyDown(KeyCode.Alpha3) || Input.GetKeyDown(KeyCode.Keypad3))
+            ApplyCandidateByIndex(2);
+        else if (Input.GetKeyDown(KeyCode.Alpha4) || Input.GetKeyDown(KeyCode.Keypad4))
+            ApplyCandidateByIndex(3);
+        else if (Input.GetKeyDown(KeyCode.Alpha5) || Input.GetKeyDown(KeyCode.Keypad5))
+            ApplyCandidateByIndex(4);
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -858,6 +879,42 @@ public class CameraCandidateGenerator : MonoBehaviour
         previewCamera.transform.position = best.position;
         previewCamera.transform.rotation = best.rotation;
         Debug.Log($"[PCCG] Camera placed at {best.position} (score={best.totalScore:F3})");
+    }
+
+    public void ApplyCandidateByIndex(int index)
+    {
+        if (topCandidates == null || topCandidates.Count == 0)
+        {
+            Debug.LogWarning("[PCCG] No candidates to preview.");
+            return;
+        }
+
+        if (index < 0 || index >= topCandidates.Count)
+        {
+            Debug.LogWarning($"[PCCG] Candidate #{index + 1} is not available. topCandidates.Count={topCandidates.Count}");
+            return;
+        }
+
+        if (previewCamera == null)
+        {
+            Debug.LogWarning("[PCCG] previewCamera is null. Cannot preview candidate.");
+            return;
+        }
+
+        StopAllCoroutines();
+
+        var candidate = topCandidates[index];
+        previewCamera.transform.position = candidate.position;
+        previewCamera.transform.rotation = candidate.rotation;
+        currentPreviewCandidateIndex = index;
+
+        Debug.Log(
+            $"[PCCG] Preview candidate #{index + 1}: " +
+            $"score={candidate.totalScore:F3}, pos={candidate.position}, " +
+            $"elev={candidate.elevationDeg:F2}, tilt={candidate.tiltDeg:F2}, " +
+            $"h/H={candidate.hOverH:F3}, angleScore={candidate.angleScore:F3}, " +
+            $"scaleScore={candidate.scaleScore:F3}, viewScore={candidate.viewScore:F3}"
+        );
     }
 
     void ApplyCameraFOV()
@@ -1609,7 +1666,8 @@ public class CameraCandidateGenerator : MonoBehaviour
                 var c = topCandidates[i];
                 float t = 1f - (float)i / Mathf.Max(topCandidates.Count - 1, 1);
                 Gizmos.color = Color.Lerp(Color.green, Color.magenta, t);
-                Gizmos.DrawSphere(c.position, 0.12f);
+                float radius = i == currentPreviewCandidateIndex ? 0.2f : 0.12f;
+                Gizmos.DrawSphere(c.position, radius);
                 Gizmos.DrawRay(c.position, c.rotation * Vector3.forward * 0.4f);
             }
         }
