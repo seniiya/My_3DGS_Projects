@@ -49,5 +49,6 @@ public class IntentOutputData
     public string effect_class;
     public TargetInfoData target;
     public string view_preference;
+    public string intensity;
     public CameraProfileData profile;
 }

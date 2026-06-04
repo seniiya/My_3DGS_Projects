@@ -79,12 +79,17 @@ public class IntentParserClient : MonoBehaviour
     private void ShowParsedResult(IntentOutputData output)
     {
         // UI 표시
+        string intensityText = string.IsNullOrEmpty(output.intensity)
+            ? "unknown"
+            : output.intensity;
+
         string message =
-            "Effect: "  + output.effect_class + "\n" +
-            "Target: "  + output.target.label + " / " + output.target.type + "\n" +
-            "View: "    + output.view_preference + "\n" +
-            "Shot: "    + output.profile.target_shot_size + "\n" +
-            "Angle: "   + output.profile.target_angle + "\n" +
+            "Effect: "    + output.effect_class + "\n" +
+            "Intensity: " + intensityText + "\n" +
+            "Target: "    + output.target.label + " / " + output.target.type + "\n" +
+            "View: "      + output.view_preference + "\n" +
+            "Shot: "      + output.profile.target_shot_size + "\n" +
+            "Angle: "     + output.profile.target_angle + "\n" +
             (string.IsNullOrEmpty(output.warning) ? "" : "Warning: " + output.warning);
 
         SetResult(message);

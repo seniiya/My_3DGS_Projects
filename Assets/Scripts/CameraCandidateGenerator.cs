@@ -114,6 +114,11 @@ public class CameraCandidateGenerator : MonoBehaviour
     public float fallbackFaceHeightRatio = 0.13f;
     public string lookTargetMode = "upper_body";
 
+    [Header("Intent Intensity")]
+    public string intentIntensity = "medium";
+    private string currentEffectClass = "Unknown";
+    private string currentTargetAngle = "";
+
     [Header("Internal Sampling Ranges")]
     public float sampleElevationMin = -35f;
     public float sampleElevationMax = 80f;
@@ -1284,15 +1289,68 @@ public class CameraCandidateGenerator : MonoBehaviour
     float ComputeAngleScore(float tiltDeg)
     {
         float center = (targetTiltMin + targetTiltMax) * 0.5f;
+        float bias = GetIntensityBias01();
+        float target = center;
+        string targetAngle = string.IsNullOrEmpty(currentTargetAngle) ? "" : currentTargetAngle.ToLowerInvariant();
+        bool isAngleIntensityProfile =
+            targetAngle.Contains("low_angle") ||
+            (targetAngle.Contains("high_angle") && !targetAngle.Contains("eye_level"));
+
+        if (isAngleIntensityProfile && Mathf.Abs(targetTiltMax - targetTiltMin) >= 10f)
+        {
+            float highOnlyBias = Mathf.Clamp01((bias - 0.5f) / 0.5f);
+            target = Mathf.Lerp(center, targetTiltMax, highOnlyBias * 0.6f);
+        }
+
         float half   = Mathf.Max((targetTiltMax - targetTiltMin) * 0.5f, 0.1f);
-        return Mathf.Clamp01(1f - Mathf.Abs(tiltDeg - center) / half);
+        return Mathf.Clamp01(1f - Mathf.Abs(tiltDeg - target) / half);
     }
 
     float ComputeScaleScore(float hOverH)
     {
         float center = (hOverH_min + hOverH_max) * 0.5f;
+        float bias = GetIntensityBias01();
+        float target;
+        string effectClass = string.IsNullOrEmpty(currentEffectClass) ? "" : currentEffectClass.ToLowerInvariant();
+
+        if (effectClass == "tense" || effectClass == "sadness")
+        {
+            target = Mathf.Lerp(center, hOverH_min, bias);
+        }
+        else if (effectClass == "relaxed")
+        {
+            target = Mathf.Lerp(center, hOverH_max, bias);
+        }
+        else if (effectClass == "delighted")
+        {
+            target = Mathf.Lerp(center, hOverH_max, bias * 0.7f);
+        }
+        else
+        {
+            target = center;
+        }
+
         float half   = Mathf.Max((hOverH_max - hOverH_min) * 0.5f, 0.001f);
-        return Mathf.Clamp01(1f - Mathf.Abs(hOverH - center) / half);
+        return Mathf.Clamp01(1f - Mathf.Abs(hOverH - target) / half);
+    }
+
+    float GetIntensityBias01()
+    {
+        string normalized = string.IsNullOrEmpty(intentIntensity)
+            ? "medium"
+            : intentIntensity.ToLowerInvariant();
+
+        switch (normalized)
+        {
+            case "low":
+                return 0.25f;
+            case "high":
+                return 0.80f;
+            case "medium":
+            case "unknown":
+            default:
+                return 0.50f;
+        }
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -1728,6 +1786,15 @@ public class CameraCandidateGenerator : MonoBehaviour
 
         focusAnchor    = prof.default_focus_anchor ?? "full_body";
         viewPreference = output.view_preference    ?? "unspecified";
+        currentEffectClass = output.effect_class ?? "Unknown";
+        currentTargetAngle = output.profile != null && output.profile.target_angle != null
+            ? output.profile.target_angle
+            : "";
+        intentIntensity = string.IsNullOrEmpty(output.intensity) || output.intensity.ToLowerInvariant() == "unknown"
+            ? "medium"
+            : output.intensity.ToLowerInvariant();
+
+        Debug.Log($"[PCCG] Intent intensity applied: {intentIntensity}");
 
         isBirdsEyeProfile =
             output.profile != null &&
@@ -1799,6 +1866,10 @@ public class CameraCandidateGenerator : MonoBehaviour
                   $"lookTargetMode={lookTargetMode}");
 
         // FOV가 h/H 계산에 영향을 주므로 후보 생성 전에 먼저 적용
+        Debug.Log(
+            $"[PCCG] Intensity scoring bias: effect={currentEffectClass}, intensity={intentIntensity}, " +
+            $"scaleRange=[{hOverH_min:F3},{hOverH_max:F3}], tiltRange=[{targetTiltMin:F1},{targetTiltMax:F1}]"
+        );
         ApplyCameraFOV();
         GenerateCandidates();
 
