@@ -97,6 +97,7 @@ public class CameraCandidateGenerator : MonoBehaviour
     [Header("Sampling")]
     [Range(100, 1000)]
     public int sampleCount = 300;
+    private bool _relaxedFallbackSampling = false;
 
     [Range(1, 10)]
     public int topK = 5;
@@ -381,10 +382,11 @@ public class CameraCandidateGenerator : MonoBehaviour
             }
             if (!PassesViewPreference(dir)) { rejectViewPreference++; continue; }
 
-            for (int di = 0; di < 3; di++)
+            int distanceSampleCount = _relaxedFallbackSampling ? 7 : 3;
+            for (int di = 0; di < distanceSampleCount; di++)
             {
                 totalDistanceSamples++;
-                float t = (di + 1) / 4f;
+                float t = (di + 1) / (float)(distanceSampleCount + 1);
                 float D = Mathf.Lerp(D_min, D_max, t);
                 Vector3 candidatePos = pivotPoint + dir * D;
 
@@ -1680,8 +1682,27 @@ public class CameraCandidateGenerator : MonoBehaviour
             output.profile.target_angle != null &&
             output.profile.target_angle.ToLower().Contains("ground");
 
+        bool isLowAngleProfile =
+            output != null &&
+            output.profile != null &&
+            output.profile.target_angle != null &&
+            output.profile.target_angle.ToLowerInvariant().Contains("low_angle");
+
         targetTiltMin = elevationMin;
         targetTiltMax = elevationMax;
+
+        if (isLowAngleProfile)
+        {
+            float a = Mathf.Abs(elevationMin);
+            float b = Mathf.Abs(elevationMax);
+            targetTiltMin = Mathf.Min(a, b);
+            targetTiltMax = Mathf.Max(a, b);
+
+            Debug.Log(
+                $"[PCCG] Low-angle tilt sign converted for Unity convention: " +
+                $"profile=[{elevationMin},{elevationMax}] scoring=[{targetTiltMin},{targetTiltMax}]"
+            );
+        }
 
         if (isBirdsEyeProfile)
         {
@@ -1722,6 +1743,44 @@ public class CameraCandidateGenerator : MonoBehaviour
         // FOV가 h/H 계산에 영향을 주므로 후보 생성 전에 먼저 적용
         ApplyCameraFOV();
         GenerateCandidates();
+
+        bool isRelaxedProfile =
+            output != null &&
+            (
+                output.effect_class == "Relaxed" ||
+                (output.profile != null &&
+                 output.profile.target_angle != null &&
+                 output.profile.target_angle.ToLower().Contains("low_angle"))
+            );
+
+        if (isRelaxedProfile && topCandidates.Count == 0)
+        {
+            int oldSampleCount = sampleCount;
+            bool oldRelaxedFallbackSampling = _relaxedFallbackSampling;
+
+            Debug.LogWarning("[PCCG] Relaxed fallback retry: increased sampling density only. profile p unchanged.");
+
+            sampleCount = Mathf.Max(sampleCount, 1000);
+            _relaxedFallbackSampling = true;
+
+            try
+            {
+                GenerateCandidates();
+            }
+            finally
+            {
+                sampleCount = oldSampleCount;
+                _relaxedFallbackSampling = oldRelaxedFallbackSampling;
+            }
+
+            if (topCandidates.Count == 0)
+            {
+                Debug.LogWarning(
+                    "[PCCG] Relaxed fallback still produced 0 candidates. " +
+                    "Likely causes: character collider rejects close-up positions, angleScore/scaleScore hard reject, or inside raycast rejects low-angle close-up positions."
+                );
+            }
+        }
 
         string appliedViewPreference = string.IsNullOrEmpty(viewPreference)
             ? "unspecified"
