@@ -147,7 +147,7 @@ public class CameraCandidateGenerator : MonoBehaviour
     [Header("Bird's Eye Settings")]
     [Tooltip("Bird's eye shot에서 천장이 낮을 때 사용할 광각 FOV (degrees).")]
     [Range(40f, 120f)]
-    public float birdsEyeFOV = 75f;
+    public float birdsEyeFOV = 100f;
 
     [Header("Trajectory Settings")]
     [Range(8, 64)]
@@ -287,15 +287,31 @@ public class CameraCandidateGenerator : MonoBehaviour
 
         // ── 천장 높이 계산 ──────────────────────────────────────────────────
         float ceilingY = float.MaxValue;
-        if (Physics.Raycast(pivotPoint + Vector3.up * 0.1f, Vector3.up,
-            out RaycastHit ceilHit, 20f, environmentLayer))
         {
-            ceilingY = ceilHit.point.y - 0.3f;
-            Debug.Log($"[PCCG] Ceiling detected at Y={ceilingY:F2}m");
-        }
-        else
-        {
-            Debug.Log("[PCCG] No ceiling detected above pivot.");
+            float highestCeiling = float.MinValue;
+            int ceilingHitCount = 0;
+            float[] probeOffsets = { 0f, 1.5f, -1.5f };
+            foreach (float ox in probeOffsets)
+            {
+                foreach (float oz in probeOffsets)
+                {
+                    Vector3 origin = pivotPoint + new Vector3(ox, 0.1f, oz);
+                    if (Physics.Raycast(origin, Vector3.up, out RaycastHit ch, 20f, environmentLayer))
+                    {
+                        ceilingHitCount++;
+                        if (ch.point.y > highestCeiling) highestCeiling = ch.point.y;
+                    }
+                }
+            }
+            if (ceilingHitCount > 0)
+            {
+                ceilingY = highestCeiling - 0.3f;
+                Debug.Log($"[PCCG] Ceiling: highest hit among {ceilingHitCount} probes, ceilingY={ceilingY:F2}m");
+            }
+            else
+            {
+                Debug.Log("[PCCG] No ceiling detected above any probe (ceilingY=MaxValue).");
+            }
         }
         Debug.Log($"[PCCG] Ceiling check: pivotY={pivotPoint.y:F2}, detectedCeilingY={ceilingY:F2}");
 
@@ -1001,7 +1017,7 @@ public class CameraCandidateGenerator : MonoBehaviour
     string InferLookTargetModeFromShotScale(float min, float max)
     {
         // XCU + CU: profile p h/H = 0.65-0.95.
-        if (min >= 0.65f)
+        if (min >= 0.65f && max <= 0.95f)
             return "xcu_cu";
 
         // MCU + MS: profile p h/H = 0.24-0.65.
@@ -1445,6 +1461,62 @@ public class CameraCandidateGenerator : MonoBehaviour
         return selected;
     }
 
+    // Bird's-eye 전용: 천장이 낮은 공간에서 후보 샘플링 대신
+    // 천장 바로 아래 최대 높이에 카메라를 직접 배치하고 아래를 내려다본다.
+    // profile p의 -90° 이상치를 공간이 허용하지 않을 때의 fallback.
+    void PlaceBirdsEyeCamera()
+    {
+        Vector3 pivotPoint = GetPivotPoint();
+        Vector3 lookTargetPoint = GetLookTargetPoint();
+
+        // 천장 높이 측정 (9-probe 중 최고값)
+        float highestCeiling = float.MinValue;
+        int hitCount = 0;
+        float[] probeOffsets = { 0f, 1.5f, -1.5f };
+        foreach (float ox in probeOffsets)
+            foreach (float oz in probeOffsets)
+            {
+                Vector3 origin = pivotPoint + new Vector3(ox, 0.1f, oz);
+                if (Physics.Raycast(origin, Vector3.up, out RaycastHit ch, 20f, environmentLayer))
+                {
+                    hitCount++;
+                    if (ch.point.y > highestCeiling) highestCeiling = ch.point.y;
+                }
+            }
+
+        float camY;
+        if (hitCount > 0)
+            camY = highestCeiling - 0.3f;   // 천장 바로 아래
+        else
+            camY = pivotPoint.y + 5f;        // 천장 못 찾으면 5m 위
+
+        // 카메라는 캐릭터 머리 위 수직선상, 천장 바로 아래
+        Vector3 camPos = new Vector3(pivotPoint.x, camY, pivotPoint.z);
+
+        // 너무 낮으면(머리에 거의 붙으면) 최소 확보
+        if (camPos.y < lookTargetPoint.y + 0.5f)
+            camPos.y = lookTargetPoint.y + 0.5f;
+
+        Quaternion camRot = Quaternion.LookRotation(lookTargetPoint - camPos, Vector3.up);
+        previewCamera.transform.position = camPos;
+        previewCamera.transform.rotation = camRot;
+        previewCamera.fieldOfView = birdsEyeFOV;
+
+        float height = camPos.y - lookTargetPoint.y;
+        Debug.Log($"[PCCG] Bird's-eye direct placement: camPos={camPos}, ceilingY={(hitCount > 0 ? highestCeiling : -1f):F2}, heightAboveTarget={height:F2}m, FOV={birdsEyeFOV:F1}");
+
+        // topCandidates에도 1개 기록 (UI/gizmo 표시용)
+        topCandidates.Clear();
+        topCandidates.Add(new CameraCandidate {
+            position     = camPos,
+            rotation     = camRot,
+            totalScore   = 1f,
+            elevationDeg = 90f,
+            hOverH       = 0f,
+            tiltDeg      = ComputeCameraTiltDeg(camPos, lookTargetPoint)
+        });
+    }
+
     // Bird's-eye profile: trajectory 없이 best static placement만 적용
     void ApplyStaticCameraPlacement()
     {
@@ -1624,10 +1696,10 @@ public class CameraCandidateGenerator : MonoBehaviour
             // tilt target은 수평 근처로 유지 (bird's-eye처럼 아래로 꺾이면 안 됨).
             sampleElevationMin = -25f;
             sampleElevationMax = 25f;
-            sampleCameraHeightMin = 0.03f;  // shoes 기준 3cm 이상
-            sampleCameraHeightMax = 0.30f;  // shoes 기준 30cm 이하
+            sampleCameraHeightMin = 0.05f;
+            sampleCameraHeightMax = 0.50f;
             targetTiltMin = 0f;
-            targetTiltMax = 12f;
+            targetTiltMax = 35f;  // 신발 높이에서 몸통을 올려다보는 실제 각도를 허용 (공간 배치 보정)
             Debug.Log(
                 $"[PCCG] Ground-level profile. " +
                 $"Camera relative height=[{sampleCameraHeightMin},{sampleCameraHeightMax}]m, " +
@@ -1682,9 +1754,9 @@ public class CameraCandidateGenerator : MonoBehaviour
 
         if (isBirdsEyeProfile)
         {
-            // Bird's eye: trajectory 생성/재생 없이 static placement만 적용
-            Debug.Log("[PCCG] Bird's-eye profile detected: using static placement mode.");
-            ApplyStaticCameraPlacement();
+            // Bird's eye: 천장 아래 직접 배치 (후보 샘플링 결과 무시)
+            Debug.Log("[PCCG] Bird's-eye profile detected: using direct overhead placement.");
+            PlaceBirdsEyeCamera();
         }
         else
         {
