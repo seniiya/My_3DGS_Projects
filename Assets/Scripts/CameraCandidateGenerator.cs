@@ -487,6 +487,9 @@ public class CameraCandidateGenerator : MonoBehaviour
                         scaleScore * 0.50f;
                 }
 
+                float intensityBias = ComputeIntensityScaleBias(actualHOverH);
+                totalScore *= intensityBias;
+
                 Quaternion lookRot = Quaternion.LookRotation(lookTargetPoint - candidatePos, Vector3.up);
 
                 validCandidates.Add(new CameraCandidate
@@ -883,6 +886,7 @@ public class CameraCandidateGenerator : MonoBehaviour
         var best = topCandidates[0];
         previewCamera.transform.position = best.position;
         previewCamera.transform.rotation = best.rotation;
+        ApplyFOVForSelectedCandidate(best);
         Debug.Log($"[PCCG] Camera placed at {best.position} (score={best.totalScore:F3})");
     }
 
@@ -911,6 +915,7 @@ public class CameraCandidateGenerator : MonoBehaviour
         var candidate = topCandidates[index];
         previewCamera.transform.position = candidate.position;
         previewCamera.transform.rotation = candidate.rotation;
+        ApplyFOVForSelectedCandidate(candidate);
         currentPreviewCandidateIndex = index;
 
         Debug.Log(
@@ -940,6 +945,57 @@ public class CameraCandidateGenerator : MonoBehaviour
     // shoesReference가 있으면 shoes mesh의 바닥(bounds.min.y)을 기준으로 사용.
     // 다른 profile에서는 이 함수를 호출하지 않는다.
     // (추후 아래쪽 raycast로 실제 floor hit Y로 확장 가능)
+    void ApplyFOVForSelectedCandidate(CameraCandidate candidate)
+    {
+        if (previewCamera == null || candidate == null)
+            return;
+
+        if (isBirdsEyeProfile)
+            return;
+
+        string effectClass = string.IsNullOrEmpty(currentEffectClass) ? "" : currentEffectClass.ToLowerInvariant();
+        bool usesCloseUpFOV = effectClass == "relaxed" || hOverH_min >= telephotoThreshold;
+        if (!usesCloseUpFOV)
+            return;
+
+        float center = (hOverH_min + hOverH_max) * 0.5f;
+        float targetHOverH;
+        string normalizedIntensity = string.IsNullOrEmpty(intentIntensity)
+            ? "medium"
+            : intentIntensity.ToLowerInvariant();
+
+        switch (normalizedIntensity)
+        {
+            case "low":
+                targetHOverH = center;
+                break;
+            case "high":
+                targetHOverH = Mathf.Lerp(center, hOverH_max, 0.85f);
+                break;
+            case "medium":
+            case "unknown":
+            default:
+                targetHOverH = Mathf.Lerp(center, hOverH_max, 0.5f);
+                break;
+        }
+
+        targetHOverH = Mathf.Clamp(targetHOverH, hOverH_min, hOverH_max);
+
+        float subjectHeightM = GetReferenceSubjectHeight();
+        float D = Vector3.Distance(candidate.position, GetLookTargetPoint());
+        if (D <= 0.001f || targetHOverH <= 0.001f)
+            return;
+
+        float fovRad = 2f * Mathf.Atan(subjectHeightM / (2f * D * targetHOverH));
+        float fovDeg = Mathf.Clamp(fovRad * Mathf.Rad2Deg, 10f, 35f);
+        previewCamera.fieldOfView = fovDeg;
+
+        Debug.Log(
+            $"[PCCG] FOV adjusted for intensity: effect={currentEffectClass}, intensity={intentIntensity}, " +
+            $"D={D:F2}, targetH/H={targetHOverH:F3}, fov={fovDeg:F1}"
+        );
+    }
+
     float GetGroundReferenceY()
     {
         if (shoesReference != null)
@@ -1289,28 +1345,22 @@ public class CameraCandidateGenerator : MonoBehaviour
     float ComputeAngleScore(float tiltDeg)
     {
         float center = (targetTiltMin + targetTiltMax) * 0.5f;
-        float bias = GetIntensityBias01();
-        float target = center;
-        string targetAngle = string.IsNullOrEmpty(currentTargetAngle) ? "" : currentTargetAngle.ToLowerInvariant();
-        bool isAngleIntensityProfile =
-            targetAngle.Contains("low_angle") ||
-            (targetAngle.Contains("high_angle") && !targetAngle.Contains("eye_level"));
-
-        if (isAngleIntensityProfile && Mathf.Abs(targetTiltMax - targetTiltMin) >= 10f)
-        {
-            float highOnlyBias = Mathf.Clamp01((bias - 0.5f) / 0.5f);
-            target = Mathf.Lerp(center, targetTiltMax, highOnlyBias * 0.6f);
-        }
-
         float half   = Mathf.Max((targetTiltMax - targetTiltMin) * 0.5f, 0.1f);
-        return Mathf.Clamp01(1f - Mathf.Abs(tiltDeg - target) / half);
+        return Mathf.Clamp01(1f - Mathf.Abs(tiltDeg - center) / half);
     }
 
     float ComputeScaleScore(float hOverH)
     {
         float center = (hOverH_min + hOverH_max) * 0.5f;
+        float half   = Mathf.Max((hOverH_max - hOverH_min) * 0.5f, 0.001f);
+        return Mathf.Clamp01(1f - Mathf.Abs(hOverH - center) / half);
+    }
+
+    float ComputeIntensityScaleBias(float hOverH)
+    {
+        float center = (hOverH_min + hOverH_max) * 0.5f;
         float bias = GetIntensityBias01();
-        float target;
+        float target = center;
         string effectClass = string.IsNullOrEmpty(currentEffectClass) ? "" : currentEffectClass.ToLowerInvariant();
 
         if (effectClass == "tense" || effectClass == "sadness")
@@ -1325,13 +1375,10 @@ public class CameraCandidateGenerator : MonoBehaviour
         {
             target = Mathf.Lerp(center, hOverH_max, bias * 0.7f);
         }
-        else
-        {
-            target = center;
-        }
 
         float half   = Mathf.Max((hOverH_max - hOverH_min) * 0.5f, 0.001f);
-        return Mathf.Clamp01(1f - Mathf.Abs(hOverH - target) / half);
+        float closeness = Mathf.Clamp01(1f - Mathf.Abs(hOverH - target) / half);
+        return Mathf.Lerp(0.90f, 1.10f, closeness);
     }
 
     float GetIntensityBias01()
