@@ -1040,6 +1040,32 @@ public class CameraCandidateGenerator : MonoBehaviour
 
     Vector3 GetLookTargetPoint()
     {
+        string mode = (lookTargetMode ?? string.Empty).ToLowerInvariant();
+
+        if (headBone != null)
+        {
+            switch (mode)
+            {
+                case "xcu_cu":
+                case "close_up":
+                case "face_eye":
+                case "eye":
+                case "eyes":
+                case "face":
+                    return headBone.position;
+
+                case "mcu_ms":
+                case "medium":
+                case "face_upper_body":
+                    return Vector3.Lerp(characterRoot.position, headBone.position, 0.75f);
+
+                case "mls":
+                case "wide":
+                case "upper_body":
+                    return Vector3.Lerp(characterRoot.position, headBone.position, 0.60f);
+            }
+        }
+
         float characterHeight = GetCharacterWorldHeight();
         return characterRoot.position + Vector3.up * (characterHeight * GetLookTargetHeightRatio());
     }
@@ -1168,19 +1194,13 @@ public class CameraCandidateGenerator : MonoBehaviour
 
     float GetCharacterWorldHeight()
     {
+        if (headBone != null && characterRoot != null)
+            return (headBone.position.y - characterRoot.position.y) / 0.90f;
+
         if (characterRoot == null)
         {
             Debug.LogWarning("[PCCG] characterRoot is null. Using default 1.7m.");
             return 1.7f;
-        }
-
-        Renderer[] renderers = characterRoot.GetComponentsInChildren<Renderer>();
-        if (renderers.Length > 0)
-        {
-            Bounds bounds = renderers[0].bounds;
-            foreach (var r in renderers)
-                bounds.Encapsulate(r.bounds);
-            return bounds.size.y;
         }
 
         CapsuleCollider capsule = characterRoot.GetComponentInChildren<CapsuleCollider>();
@@ -1190,6 +1210,15 @@ public class CameraCandidateGenerator : MonoBehaviour
         CharacterController cc = characterRoot.GetComponentInChildren<CharacterController>();
         if (cc != null)
             return cc.height * characterRoot.lossyScale.y;
+
+        Renderer[] renderers = characterRoot.GetComponentsInChildren<Renderer>();
+        if (renderers.Length > 0)
+        {
+            Bounds bounds = renderers[0].bounds;
+            foreach (var r in renderers)
+                bounds.Encapsulate(r.bounds);
+            return bounds.size.y;
+        }
 
         return 1.7f;
     }
