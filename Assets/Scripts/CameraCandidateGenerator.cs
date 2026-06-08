@@ -133,6 +133,9 @@ public class CameraCandidateGenerator : MonoBehaviour
     public float viewYawOffsetDeg = 0f;
     public float viewConeHalfAngle = 75f;
     public float quarterViewHalfAngle = 50f;
+    [Tooltip("view_preference가 unspecified일 때 허용할 인물 정면 반구 half-angle(도). ±90이면 양 사이드까지 허용.")]
+    public float unspecifiedFrontHalfAngle = 90f;
+    private bool _ignoreUnspecifiedFrontFilter = false;
 
     private const float COLLISION_RADIUS = 0.18f;
 
@@ -1294,12 +1297,19 @@ public class CameraCandidateGenerator : MonoBehaviour
         string pref = string.IsNullOrEmpty(viewPreference)
             ? "unspecified"
             : viewPreference.Trim().ToLowerInvariant();
-        if (pref == "unspecified")
-            return true;
         if (characterRoot == null)
             return true;
 
         float az = GetLocalAzimuthFromDirection(dir);
+
+        if (pref == "unspecified")
+        {
+            // 방향 미지정: 정면 반구(±unspecifiedFrontHalfAngle)만 허용해 head가 보이게 한다.
+            if (_ignoreUnspecifiedFrontFilter)
+                return true;
+            return Mathf.Abs(Mathf.DeltaAngle(az, 0f)) <= unspecifiedFrontHalfAngle;
+        }
+
         switch (pref)
         {
             case "front":
@@ -2070,6 +2080,18 @@ public class CameraCandidateGenerator : MonoBehaviour
             viewConeHalfAngle = oldViewConeHalfAngle;
             quarterViewHalfAngle = oldQuarterViewHalfAngle;
             sampleCount = oldSampleCount;
+        }
+
+        // Unspecified 정면 반구 필터가 후보를 너무 적게 남기면 전체 구로 완화하여 재생성
+        if (!isBirdsEyeProfile &&
+            appliedViewPreference == "unspecified" &&
+            topCandidates.Count < 2 &&
+            !_ignoreUnspecifiedFrontFilter)
+        {
+            Debug.LogWarning("[PCCG] Unspecified front-hemisphere filter left too few candidates. Retrying with full sphere.");
+            _ignoreUnspecifiedFrontFilter = true;
+            GenerateCandidates();
+            _ignoreUnspecifiedFrontFilter = false;
         }
 
         if (isBirdsEyeProfile)
