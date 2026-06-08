@@ -2630,6 +2630,7 @@ MonoBehaviour:
   topCandidates: []
   enableNumberKeyCandidatePreview: 1
   currentPreviewCandidateIndex: -1
+  followAnimatedTarget: 1
   trajectoryCandidates: []
   closeUpFOV: 20
   telephotoThreshold: 0.4

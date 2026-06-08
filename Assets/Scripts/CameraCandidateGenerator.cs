@@ -143,6 +143,12 @@ public class CameraCandidateGenerator : MonoBehaviour
     public bool enableNumberKeyCandidatePreview = true;
     public int currentPreviewCandidateIndex = -1;
 
+    [Header("Animated Target Follow")]
+    public bool followAnimatedTarget = true;
+    private bool hasFollowOffset = false;
+    private Vector3 selectedCameraOffsetFromPivot = Vector3.zero;
+    private bool isPlayingTrajectory = false;
+
     [Header("Trajectory Output (read-only)")]
     public List<CameraTrajectory> trajectoryCandidates = new List<CameraTrajectory>();
 
@@ -224,19 +230,35 @@ public class CameraCandidateGenerator : MonoBehaviour
 
     void Update()
     {
-        if (!enableNumberKeyCandidatePreview)
-            return;
+        if (enableNumberKeyCandidatePreview)
+        {
+            if (Input.GetKeyDown(KeyCode.Alpha1) || Input.GetKeyDown(KeyCode.Keypad1))
+                ApplyCandidateByIndex(0);
+            else if (Input.GetKeyDown(KeyCode.Alpha2) || Input.GetKeyDown(KeyCode.Keypad2))
+                ApplyCandidateByIndex(1);
+            else if (Input.GetKeyDown(KeyCode.Alpha3) || Input.GetKeyDown(KeyCode.Keypad3))
+                ApplyCandidateByIndex(2);
+            else if (Input.GetKeyDown(KeyCode.Alpha4) || Input.GetKeyDown(KeyCode.Keypad4))
+                ApplyCandidateByIndex(3);
+            else if (Input.GetKeyDown(KeyCode.Alpha5) || Input.GetKeyDown(KeyCode.Keypad5))
+                ApplyCandidateByIndex(4);
+        }
 
-        if (Input.GetKeyDown(KeyCode.Alpha1) || Input.GetKeyDown(KeyCode.Keypad1))
-            ApplyCandidateByIndex(0);
-        else if (Input.GetKeyDown(KeyCode.Alpha2) || Input.GetKeyDown(KeyCode.Keypad2))
-            ApplyCandidateByIndex(1);
-        else if (Input.GetKeyDown(KeyCode.Alpha3) || Input.GetKeyDown(KeyCode.Keypad3))
-            ApplyCandidateByIndex(2);
-        else if (Input.GetKeyDown(KeyCode.Alpha4) || Input.GetKeyDown(KeyCode.Keypad4))
-            ApplyCandidateByIndex(3);
-        else if (Input.GetKeyDown(KeyCode.Alpha5) || Input.GetKeyDown(KeyCode.Keypad5))
-            ApplyCandidateByIndex(4);
+        if (followAnimatedTarget &&
+            hasFollowOffset &&
+            !isPlayingTrajectory &&
+            previewCamera != null &&
+            currentPreviewCandidateIndex >= 0 &&
+            currentPreviewCandidateIndex < topCandidates.Count)
+        {
+            Vector3 currentPivot = GetPivotPoint();
+            previewCamera.transform.position = currentPivot + selectedCameraOffsetFromPivot;
+
+            Vector3 currentLookTarget = GetCurrentAnimatedLookTarget();
+            Vector3 lookDir = currentLookTarget - previewCamera.transform.position;
+            if (lookDir.sqrMagnitude > 0.0001f)
+                previewCamera.transform.rotation = Quaternion.LookRotation(lookDir, Vector3.up);
+        }
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -884,9 +906,13 @@ public class CameraCandidateGenerator : MonoBehaviour
         }
 
         var best = topCandidates[0];
+        Vector3 pivot = GetPivotPoint();
+        selectedCameraOffsetFromPivot = best.position - pivot;
+        hasFollowOffset = true;
         previewCamera.transform.position = best.position;
         previewCamera.transform.rotation = best.rotation;
         ApplyFOVForSelectedCandidate(best);
+        currentPreviewCandidateIndex = 0;
         Debug.Log($"[PCCG] Camera placed at {best.position} (score={best.totalScore:F3})");
     }
 
@@ -911,10 +937,19 @@ public class CameraCandidateGenerator : MonoBehaviour
         }
 
         StopAllCoroutines();
+        isPlayingTrajectory = false;
 
         var candidate = topCandidates[index];
+        Vector3 pivot = GetPivotPoint();
+        selectedCameraOffsetFromPivot = candidate.position - pivot;
+        hasFollowOffset = true;
         previewCamera.transform.position = candidate.position;
-        previewCamera.transform.rotation = candidate.rotation;
+        Vector3 currentLookTarget = GetCurrentAnimatedLookTarget();
+        Vector3 lookDir = currentLookTarget - candidate.position;
+        if (lookDir.sqrMagnitude > 0.0001f)
+            previewCamera.transform.rotation = Quaternion.LookRotation(lookDir, Vector3.up);
+        else
+            previewCamera.transform.rotation = candidate.rotation;
         ApplyFOVForSelectedCandidate(candidate);
         currentPreviewCandidateIndex = index;
 
@@ -1068,6 +1103,11 @@ public class CameraCandidateGenerator : MonoBehaviour
 
         float characterHeight = GetCharacterWorldHeight();
         return characterRoot.position + Vector3.up * (characterHeight * GetLookTargetHeightRatio());
+    }
+
+    Vector3 GetCurrentAnimatedLookTarget()
+    {
+        return GetLookTargetPoint();
     }
 
     float GetLookTargetHeightRatio()
@@ -1741,12 +1781,16 @@ public class CameraCandidateGenerator : MonoBehaviour
             return;
         }
         StopAllCoroutines();
+        isPlayingTrajectory = false;
+        hasFollowOffset = false;
+        currentPreviewCandidateIndex = -1;
         DrawTrajectoryLine(trajectoryCandidates[0]);
         StartCoroutine(PlayTrajectoryCoroutine(trajectoryCandidates[0]));
     }
 
     IEnumerator PlayTrajectoryCoroutine(CameraTrajectory traj)
     {
+        isPlayingTrajectory = true;
         float elapsed = 0f;
         while (elapsed < trajectoryDuration)
         {
@@ -1755,14 +1799,26 @@ public class CameraCandidateGenerator : MonoBehaviour
             int idx = Mathf.FloorToInt(scaled);
             int nextIdx = Mathf.Min(idx + 1, traj.positions.Count - 1);
             float localT = scaled - idx;
-            previewCamera.transform.position = Vector3.Lerp(traj.positions[idx], traj.positions[nextIdx], localT);
-            previewCamera.transform.rotation = Quaternion.Slerp(traj.rotations[idx], traj.rotations[nextIdx], localT);
+            Vector3 pos = Vector3.Lerp(traj.positions[idx], traj.positions[nextIdx], localT);
+            previewCamera.transform.position = pos;
+            Vector3 currentLookTarget = (headBone != null) ? headBone.position : GetLookTargetPoint();
+            Vector3 lookDir = currentLookTarget - pos;
+            if (lookDir.sqrMagnitude > 0.0001f)
+                previewCamera.transform.rotation = Quaternion.LookRotation(lookDir, Vector3.up);
+            else
+                previewCamera.transform.rotation = Quaternion.Slerp(traj.rotations[idx], traj.rotations[nextIdx], localT);
             elapsed += Time.deltaTime;
             yield return null;
         }
         int last = traj.positions.Count - 1;
         previewCamera.transform.position = traj.positions[last];
-        previewCamera.transform.rotation = traj.rotations[last];
+        Vector3 finalLookTarget = (headBone != null) ? headBone.position : GetLookTargetPoint();
+        Vector3 finalDir = finalLookTarget - traj.positions[last];
+        if (finalDir.sqrMagnitude > 0.0001f)
+            previewCamera.transform.rotation = Quaternion.LookRotation(finalDir, Vector3.up);
+        else
+            previewCamera.transform.rotation = traj.rotations[last];
+        isPlayingTrajectory = false;
     }
 
     [Header("Trajectory Visualization")]
