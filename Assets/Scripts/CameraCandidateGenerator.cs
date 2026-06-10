@@ -202,6 +202,14 @@ public class CameraCandidateGenerator : MonoBehaviour
     [Tooltip("두 trajectory의 start/end 거리가 모두 이 값(m) 이하이면 유사 trajectory로 간주.")]
     public float trajectoryDiversityThreshold = 1.5f;
 
+    [Header("Figure Debug Data")]
+    public bool collectFigureDebugData = true;
+
+    [HideInInspector] public List<Vector3> debugSampledPositions = new List<Vector3>();
+    [HideInInspector] public List<Vector3> debugSpatialRejectedPositions = new List<Vector3>();
+    [HideInInspector] public List<Vector3> debugFeasiblePositions = new List<Vector3>();
+    [HideInInspector] public List<Vector3> debugScoreRejectedPositions = new List<Vector3>();
+
     [System.Serializable]
     public class CameraCandidate
     {
@@ -275,6 +283,14 @@ public class CameraCandidateGenerator : MonoBehaviour
         _dbgHitsZero   = 0;
         _dbgFloorFail  = 0;
         _dbgInsidePass = 0;
+
+        if (collectFigureDebugData)
+        {
+            debugSampledPositions.Clear();
+            debugSpatialRejectedPositions.Clear();
+            debugFeasiblePositions.Clear();
+            debugScoreRejectedPositions.Clear();
+        }
 
         if (characterRoot == null || previewCamera == null)
         {
@@ -441,22 +457,42 @@ public class CameraCandidateGenerator : MonoBehaviour
                 float D = Mathf.Lerp(D_min, D_max, t);
                 Vector3 candidatePos = pivotPoint + dir * D;
 
+                if (collectFigureDebugData)
+                    debugSampledPositions.Add(candidatePos);
+
                 // ── Step 3: 공간 제약 필터링 ──────────────────────────────────
 
                 // 3a. Mesh와 충돌하는 위치 제거 (environment + character)
                 if (Physics.CheckSphere(candidatePos, COLLISION_RADIUS, combinedLayer))
-                { rejectCollision++; continue; }
+                {
+                    rejectCollision++;
+                    if (collectFigureDebugData) debugSpatialRejectedPositions.Add(candidatePos);
+                    continue;
+                }
 
                 // 3b. 캐릭터가 보이지 않는 위치 제거
                 if (!HasLineOfSight(candidatePos, lookTargetPoint))
-                { rejectLineOfSight++; continue; }
+                {
+                    rejectLineOfSight++;
+                    if (collectFigureDebugData) debugSpatialRejectedPositions.Add(candidatePos);
+                    continue;
+                }
 
                 // 3c. 바닥 아래 위치 제거 (ground-level profile은 상대 높이로 별도 처리)
                 if (!isGroundLevelProfile && candidatePos.y < 0.25f)
-                { rejectGround++; continue; }
+                {
+                    rejectGround++;
+                    if (collectFigureDebugData) debugSpatialRejectedPositions.Add(candidatePos);
+                    continue;
+                }
 
                 // 3c-2. 천장 위 위치 제거
-                if (candidatePos.y > ceilingY) { rejectCeiling++; continue; }
+                if (candidatePos.y > ceilingY)
+                {
+                    rejectCeiling++;
+                    if (collectFigureDebugData) debugSpatialRejectedPositions.Add(candidatePos);
+                    continue;
+                }
 
                 // 3c-3. Ground-level profile: world Y가 아닌 ground 기준 상대 높이로 제한
                 if (isGroundLevelProfile)
@@ -465,11 +501,23 @@ public class CameraCandidateGenerator : MonoBehaviour
                     float relativeCameraHeight = candidatePos.y - groundY;
                     if (relativeCameraHeight < sampleCameraHeightMin ||
                         relativeCameraHeight > sampleCameraHeightMax)
-                    { rejectGround++; continue; }
+                    {
+                        rejectGround++;
+                        if (collectFigureDebugData) debugSpatialRejectedPositions.Add(candidatePos);
+                        continue;
+                    }
                 }
 
                 // 3d. pivot→후보 직선이 벽에 막히면 공간 밖이므로 제외.
-                if (!IsInsideSpaceByRaycast(candidatePos)) { rejectInsideSpace++; continue; }
+                if (!IsInsideSpaceByRaycast(candidatePos))
+                {
+                    rejectInsideSpace++;
+                    if (collectFigureDebugData) debugSpatialRejectedPositions.Add(candidatePos);
+                    continue;
+                }
+
+                if (collectFigureDebugData)
+                    debugFeasiblePositions.Add(candidatePos);
 
                 // ── Step 4: 실제 h/H 계산 (scoring용) ───────────────────────
                 float actualDist = Vector3.Distance(candidatePos, lookTargetPoint);
@@ -484,12 +532,14 @@ public class CameraCandidateGenerator : MonoBehaviour
                 if (scaleScore <= 0.001f)
                 {
                     rejectScale++;
+                    if (collectFigureDebugData) debugScoreRejectedPositions.Add(candidatePos);
                     continue;
                 }
 
                 if (angleScore <= 0.001f)
                 {
                     rejectAngle++;
+                    if (collectFigureDebugData) debugScoreRejectedPositions.Add(candidatePos);
                     continue;
                 }
 
@@ -1872,14 +1922,14 @@ public class CameraCandidateGenerator : MonoBehaviour
             }
         }
 
-        if (characterRoot != null)
-        {
-            Gizmos.color = Color.red;
-            Gizmos.DrawSphere(GetPivotPoint(), 0.08f);
+        // if (characterRoot != null)
+        // {
+        //     Gizmos.color = Color.red;
+        //     Gizmos.DrawSphere(GetPivotPoint(), 0.08f);
 
-            Gizmos.color = Color.blue;
-            Gizmos.DrawSphere(GetLookTargetPoint(), 0.08f);
-        }
+        //     Gizmos.color = Color.blue;
+        //     Gizmos.DrawSphere(GetLookTargetPoint(), 0.08f);
+        // }
     }
 
     void DrawManualPlayableAreaGizmo()

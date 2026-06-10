@@ -600,7 +600,7 @@ Transform:
   m_GameObject: {fileID: 330585543}
   serializedVersion: 2
   m_LocalRotation: {x: -0.09807429, y: 0.7195648, z: -0.10353895, w: -0.6796232}
-  m_LocalPosition: {x: 7.04, y: 30.416103, z: -6.772}
+  m_LocalPosition: {x: 5.766, y: 30.059, z: -7.178}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []
@@ -1390,6 +1390,66 @@ Transform:
   m_ConstrainProportionsScale: 0
   m_Children: []
   m_Father: {fileID: 416785814}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!1 &723911137
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 723911139}
+  - component: {fileID: 723911138}
+  m_Layer: 0
+  m_Name: PCCGFigureDebugViewer
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!114 &723911138
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 723911137}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: e8a1d71a2a48d424dbbfbd893146ccb5, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::PCCGFigureDebugViewer
+  generator: {fileID: 1394059624}
+  currentMode: 0
+  enableHotkeys: 1
+  captureOnModeSwitch: 1
+  sampledSize: 0.06
+  rejectedSize: 0.075
+  feasibleSize: 0.085
+  topCandidateSize: 0.18
+  screenshotFolderName: PCCG_FigureCaptures
+  screenshotScale: 2
+  sampledColor: {r: 0.55, g: 0.55, b: 0.55, a: 0.45}
+  rejectedColor: {r: 1, g: 0.15, b: 0.1, a: 0.75}
+  feasibleColor: {r: 0.1, g: 0.9, b: 0.25, a: 0.85}
+  scoreRejectedColor: {r: 1, g: 0.65, b: 0, a: 0.75}
+  topColor: {r: 0, g: 0.55, b: 1, a: 1}
+  lineColor: {r: 0, g: 1, b: 1, a: 1}
+--- !u!4 &723911139
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 723911137}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: 2.66824, y: 29.73306, z: -7.76448}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!4 &747834859 stripped
 Transform:
@@ -2728,7 +2788,7 @@ PrefabInstance:
       objectReference: {fileID: 0}
     - target: {fileID: 919132149155446097, guid: 4f3ea4d8c772b0041b63837ff9990082, type: 3}
       propertyPath: m_IsActive
-      value: 1
+      value: 0
       objectReference: {fileID: 0}
     - target: {fileID: 1082271958561512970, guid: 4f3ea4d8c772b0041b63837ff9990082, type: 3}
       propertyPath: m_Layer
@@ -2988,6 +3048,7 @@ MonoBehaviour:
   viewYawOffsetDeg: 0
   viewConeHalfAngle: 75
   quarterViewHalfAngle: 50
+  unspecifiedFrontHalfAngle: 90
   topCandidates: []
   enableNumberKeyCandidatePreview: 1
   currentPreviewCandidateIndex: -1
@@ -3009,6 +3070,11 @@ MonoBehaviour:
   shoesReference: {fileID: 747834859}
   topTrajectoryK: 3
   trajectoryDiversityThreshold: 1.5
+  collectFigureDebugData: 1
+  debugSampledPositions: []
+  debugSpatialRejectedPositions: []
+  debugFeasiblePositions: []
+  debugScoreRejectedPositions: []
   showTrajectoryLine: 1
   trajectoryColor: {r: 0, g: 1, b: 1, a: 1}
 --- !u!4 &1394059625
@@ -3382,3 +3448,4 @@ SceneRoots:
   - {fileID: 1394059625}
   - {fileID: 383470880}
   - {fileID: 1339557929}
+  - {fileID: 723911139}
