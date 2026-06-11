@@ -31,28 +31,28 @@ public class StudySessionLogger : MonoBehaviour
     public bool saveRawJson = true;
     public bool saveCandidateCsv = true;
     public bool saveTrialCsv = true;
-    public bool saveRatingCsv = true;
 
     // (선택) 20개 trial 계획. 비워두면 prompt_id는 "T01".."T20", target은 빈 값으로 자동 채움.
     // SetCurrentTrialAuto(trialIndex)가 이 목록을 1-based 인덱스로 조회한다.
     [Serializable]
     public class TrialPlanEntry
     {
-        public string promptId;            // 예: "Tense_01"
+        public string promptId;            // 예: "T1", "R1"
         public string targetEffectClass;   // Tense / Delighted / Sadness / Relaxed
+        [TextArea] public string promptText;   // 실험자 제시용(로그에는 저장하지 않음)
     }
     [Header("Optional 20-trial plan (index 1..20)")]
     public List<TrialPlanEntry> trialPlan = new List<TrialPlanEntry>();
 
+    [Header("Candidates")]
+    [Tooltip("trial당 기록할 후보 수 상한 (프로토콜: 3 = C1/C2/C3). CameraCandidateGenerator.topK도 3 권장.")]
+    public int candidatesPerTrial = 3;
+
     // ── CSV headers (스펙 고정) ────────────────────────────────────────────────
     private const string TRIALS_HEADER =
-        "participant_id,session_id,trial_index,prompt_id,target_effect_class,user_command,source_path,parsed_effect_class,intensity,confidence,view_preference,warning,best_candidate,overall_instruction_reflection,overall_emotion_expression,overall_usefulness,timestamp";
+        "participant_id,session_id,trial_index,prompt_id,target_effect_class,user_command,source_path,parsed_effect_class,intensity,confidence,view_preference,warning,timestamp";
     private const string CANDIDATES_HEADER =
-        "participant_id,session_id,trial_index,candidate_id,position_x,position_y,position_z,rotation_x,rotation_y,rotation_z,total_score,h_over_h,elevation_deg,tilt_deg,angle_score,scale_score,view_score,screenshot_path,timestamp";
-    // ratings.csv는 스펙의 파일 목록엔 없지만 saveRatingCsv 플래그와 LogCandidateRating()이 있어
-    // 후보별 평가를 담을 파일로 추가한다.
-    private const string RATINGS_HEADER =
-        "participant_id,session_id,trial_index,candidate_id,emotion_score,composition_score,satisfaction_score,is_best,comment,timestamp";
+        "participant_id,session_id,trial_index,prompt_id,target_effect_class,candidate_id,position_x,position_y,position_z,rotation_x,rotation_y,rotation_z,total_score,h_over_h,elevation_deg,tilt_deg,angle_score,scale_score,view_score,screenshot_path,timestamp";
 
     // ── Session state ─────────────────────────────────────────────────────────
     private bool _sessionStarted;
@@ -61,30 +61,14 @@ public class StudySessionLogger : MonoBehaviour
     private string _screenshotFolder;
     private StreamWriter _trialsWriter;
     private StreamWriter _candidatesWriter;
-    private StreamWriter _ratingsWriter;
     private StreamWriter _rawWriter;
 
     // ── Current trial buffer ──────────────────────────────────────────────────
-    // trials.csv 한 행은 intent(전송 시점) + overall 평가(이후 시점)를 합쳐야 완성되므로
-    // 버퍼에 모았다가 LogOverallTrialEvaluation() 또는 다음 trial 시작/종료 시 1행으로 flush 한다.
-    private bool _hasPendingTrial;
-    private bool _curTrialRowWritten;
+    // candidates.csv가 prompt_id/target_effect_class를 쓰기 위해 현재 trial 식별자만 보관.
+    // trials.csv 행은 LogTrialIntent() 시점에 13컬럼이 모두 확보되어 즉시 기록된다.
     private int _curTrialIndex;
     private string _curPromptId = "";
     private string _curTargetClass = "";
-    private string _curUserCommand = "";
-    private string _curSourcePath = "";
-    private string _curParsedEffect = "";
-    private string _curIntensity = "";
-    private string _curConfidence = "";
-    private string _curViewPref = "";
-    private string _curWarning = "";
-    private bool _curIntentLogged;
-    private string _curBestCandidate = "";
-    private int _curInstrRefl;
-    private int _curEmoExpr;
-    private int _curUseful;
-    private bool _curOverallLogged;
 
     // ── Public API ────────────────────────────────────────────────────────────
 
@@ -120,12 +104,6 @@ public class StudySessionLogger : MonoBehaviour
                 _candidatesWriter.WriteLine(CANDIDATES_HEADER);
                 _candidatesWriter.Flush();
             }
-            if (saveRatingCsv)
-            {
-                _ratingsWriter = new StreamWriter(Path.Combine(_sessionFolder, "ratings.csv"), false, csvEnc);
-                _ratingsWriter.WriteLine(RATINGS_HEADER);
-                _ratingsWriter.Flush();
-            }
             if (saveRawJson)
             {
                 _rawWriter = new StreamWriter(Path.Combine(_sessionFolder, "raw_responses.jsonl"), false, jsonEnc);
@@ -144,26 +122,9 @@ public class StudySessionLogger : MonoBehaviour
     public void SetCurrentTrial(int trialIndex, string promptId, string targetEffectClass)
     {
         EnsureSession();
-        FinalizePendingTrial();   // 이전 trial이 overall 평가 없이 끝났어도 intent 행은 남긴다.
-
-        _hasPendingTrial = true;
-        _curTrialRowWritten = false;
         _curTrialIndex = trialIndex;
         _curPromptId = promptId ?? "";
         _curTargetClass = targetEffectClass ?? "";
-        _curUserCommand = "";
-        _curSourcePath = "";
-        _curParsedEffect = "";
-        _curIntensity = "";
-        _curConfidence = "";
-        _curViewPref = "";
-        _curWarning = "";
-        _curIntentLogged = false;
-        _curBestCandidate = "";
-        _curInstrRefl = 0;
-        _curEmoExpr = 0;
-        _curUseful = 0;
-        _curOverallLogged = false;
     }
 
     // 편의 메서드: trialPlan(또는 기본값)에서 prompt_id/target을 채워 SetCurrentTrial 호출.
@@ -180,31 +141,88 @@ public class StudySessionLogger : MonoBehaviour
         SetCurrentTrial(trialIndex, promptId, targetClass);
     }
 
-    public void LogTrialIntent(string userCommand, IntentOutputData output)
+    // 프로토콜 권장 20-trial 혼합순서(T→R→S→D 5회 반복, 같은 감정 연속 금지)로 trialPlan을 채운다.
+    // Inspector 컴포넌트 우클릭 → "Fill recommended 20-trial plan". 이후 수동 편집 가능.
+    [ContextMenu("Fill recommended 20-trial plan")]
+    public void FillRecommendedTrialPlan()
+    {
+        string[] cls = { "Tense", "Relaxed", "Sadness", "Delighted" };
+        string[] pre = { "T", "R", "S", "D" };
+        string[][] txt =
+        {
+            new[]
+            {
+                "인물 또는 장면이 위협받는 느낌이 들도록 연출해 주세요.",
+                "장면이 불안하거나 불편한 느낌이 들도록 연출해 주세요.",
+                "인물이 압박을 받는 것처럼 느껴지도록 연출해 주세요.",
+                "장면의 분위기가 위험하게 느껴지도록 연출해 주세요.",
+                "카메라 구도에서 불편함이나 긴장감이 느껴지도록 연출해 주세요.",
+            },
+            new[]
+            {
+                "장면이 평온하게 느껴지도록 연출해 주세요.",
+                "인물이 편안한 상태처럼 느껴지도록 연출해 주세요.",
+                "분위기가 차분하게 느껴지도록 연출해 주세요.",
+                "순간이 안전하고 안정적으로 느껴지도록 연출해 주세요.",
+                "인물이 안도하거나 긴장이 풀린 것처럼 느껴지도록 연출해 주세요.",
+            },
+            new[]
+            {
+                "인물이 외롭게 느껴지도록 연출해 주세요.",
+                "장면이 비어 있고 공허하게 느껴지도록 연출해 주세요.",
+                "인물이 감정적으로 멀어진 것처럼 느껴지도록 연출해 주세요.",
+                "순간이 우울하거나 쓸쓸하게 느껴지도록 연출해 주세요.",
+                "장면에서 상실감이나 고립감이 느껴지도록 연출해 주세요.",
+            },
+            new[]
+            {
+                "장면이 생동감 있고 활기차게 느껴지도록 연출해 주세요.",
+                "인물 또는 장면에서 희망적인 느낌이 들도록 연출해 주세요.",
+                "순간이 즐겁고 긍정적으로 느껴지도록 연출해 주세요.",
+                "장면이 에너지 있고 고양된 느낌이 들도록 연출해 주세요.",
+                "인물이 기대감이나 들뜬 감정을 가진 것처럼 느껴지도록 연출해 주세요.",
+            },
+        };
+
+        trialPlan = new List<TrialPlanEntry>(20);
+        for (int round = 1; round <= 5; round++)
+            for (int k = 0; k < 4; k++)
+                trialPlan.Add(new TrialPlanEntry
+                {
+                    promptId = pre[k] + round.ToString(CultureInfo.InvariantCulture),
+                    targetEffectClass = cls[k],
+                    promptText = txt[k][round - 1],
+                });
+        Debug.Log("[StudySessionLogger] trialPlan filled with 20 recommended trials.");
+    }
+
+    // rawResponseJson: 서버 응답 원본 문자열(IntentParserClient의 responseJson). 있으면 raw jsonl에 그대로 저장.
+    public void LogTrialIntent(string userCommand, IntentOutputData output, string rawResponseJson = null)
     {
         EnsureSession();
-        if (!_hasPendingTrial)
+        if (_curTrialIndex <= 0) _curTrialIndex = 1;   // SetCurrentTrial 누락 시 안전장치
+
+        // trials.csv: 13컬럼이 이 시점에 모두 확보됨 → 즉시 1행 기록 + flush (유실 방지)
+        if (saveTrialCsv && _trialsWriter != null)
         {
-            // SetCurrentTrial 없이 호출된 경우의 안전장치
-            _hasPendingTrial = true;
-            _curTrialRowWritten = false;
-            _curOverallLogged = false;
-            if (_curTrialIndex <= 0) _curTrialIndex = 1;
+            string row = string.Join(",", new string[]
+            {
+                Csv(participantId), Csv(_sessionId),
+                _curTrialIndex.ToString(CultureInfo.InvariantCulture),
+                Csv(_curPromptId), Csv(_curTargetClass), Csv(userCommand ?? ""),
+                Csv(output != null ? output.source_path : ""),
+                Csv(output != null ? output.effect_class : ""),
+                Csv(output != null ? output.intensity : ""),
+                Csv(output != null ? output.confidence : ""),
+                Csv(output != null ? output.view_preference : ""),
+                Csv(output != null ? output.warning : ""),
+                Csv(Now())
+            });
+            _trialsWriter.WriteLine(row);
+            _trialsWriter.Flush();
         }
 
-        _curUserCommand = userCommand ?? "";
-        if (output != null)
-        {
-            _curSourcePath = output.source_path ?? "";
-            _curParsedEffect = output.effect_class ?? "";
-            _curIntensity = output.intensity ?? "";
-            _curConfidence = output.confidence ?? "";
-            _curViewPref = output.view_preference ?? "";
-            _curWarning = output.warning ?? "";
-        }
-        _curIntentLogged = true;
-
-        WriteRawJson(userCommand, output);   // intent는 즉시 jsonl로 남겨 유실 방지
+        WriteRawJson(userCommand, rawResponseJson);
     }
 
     public void LogCandidates(int trialIndex, CameraCandidateGenerator generator)
@@ -214,12 +232,13 @@ public class StudySessionLogger : MonoBehaviour
         if (generator == null || generator.topCandidates == null) return;
 
         var list = generator.topCandidates;
-        for (int i = 0; i < list.Count; i++)
+        int n = Mathf.Min(list.Count, Mathf.Max(0, candidatesPerTrial));   // trial당 3개(C1/C2/C3)
+        for (int i = 0; i < n; i++)
         {
             var c = list[i];
             if (c == null) continue;
 
-            string candidateId = "c" + i.ToString(CultureInfo.InvariantCulture);
+            string candidateId = "C" + (i + 1).ToString(CultureInfo.InvariantCulture);   // C1/C2/C3
             Vector3 euler = c.rotation.eulerAngles;
             // 스크린샷은 CaptureCandidateScreenshot()이 같은 규칙으로 저장하므로 경로를 미리 기록.
             string shotPath = "screenshots/T" + trialIndex.ToString("00", CultureInfo.InvariantCulture)
@@ -228,7 +247,8 @@ public class StudySessionLogger : MonoBehaviour
             string row = string.Join(",", new string[]
             {
                 Csv(participantId), Csv(_sessionId),
-                trialIndex.ToString(CultureInfo.InvariantCulture), Csv(candidateId),
+                trialIndex.ToString(CultureInfo.InvariantCulture),
+                Csv(_curPromptId), Csv(_curTargetClass), Csv(candidateId),
                 F(c.position.x), F(c.position.y), F(c.position.z),
                 F(euler.x), F(euler.y), F(euler.z),
                 F(c.totalScore), F(c.hOverH), F(c.elevationDeg), F(c.tiltDeg),
@@ -240,42 +260,8 @@ public class StudySessionLogger : MonoBehaviour
         _candidatesWriter.Flush();
     }
 
-    public void LogCandidateRating(int trialIndex, string candidateId, int emotionScore,
-                                   int compositionScore, int satisfactionScore, bool isBest, string comment)
-    {
-        EnsureSession();
-        if (!saveRatingCsv || _ratingsWriter == null) return;
-
-        string row = string.Join(",", new string[]
-        {
-            Csv(participantId), Csv(_sessionId),
-            trialIndex.ToString(CultureInfo.InvariantCulture), Csv(candidateId),
-            emotionScore.ToString(CultureInfo.InvariantCulture),
-            compositionScore.ToString(CultureInfo.InvariantCulture),
-            satisfactionScore.ToString(CultureInfo.InvariantCulture),
-            isBest ? "true" : "false",
-            Csv(comment), Csv(Now())
-        });
-        _ratingsWriter.WriteLine(row);
-        _ratingsWriter.Flush();
-    }
-
-    public void LogOverallTrialEvaluation(int trialIndex, string bestCandidate,
-                                          int instructionReflection, int emotionExpression, int usefulness)
-    {
-        EnsureSession();
-        if (!_hasPendingTrial || _curTrialIndex != trialIndex)
-            _curTrialIndex = trialIndex;   // 안전: 현재 버퍼와 trialIndex가 어긋나면 맞춰준다.
-
-        _curBestCandidate = bestCandidate ?? "";
-        _curInstrRefl = instructionReflection;
-        _curEmoExpr = emotionExpression;
-        _curUseful = usefulness;
-        _curOverallLogged = true;
-
-        WriteTrialRow();      // intent + overall을 합쳐 trials.csv 1행 완성 + flush
-        _hasPendingTrial = false;
-    }
+    // 후보별/trial 전체 평가는 프로토콜상 외부 설문/엑셀에서 수집한다(Unity 미저장).
+    // 따라서 LogCandidateRating / LogOverallTrialEvaluation / ratings.csv 는 두지 않는다.
 
     public string CaptureCandidateScreenshot(int trialIndex, string candidateId, Camera previewCamera)
     {
@@ -333,66 +319,49 @@ public class StudySessionLogger : MonoBehaviour
         if (!_sessionStarted) StartSession();
     }
 
-    private void FinalizePendingTrial()
-    {
-        if (_hasPendingTrial && _curIntentLogged && !_curTrialRowWritten)
-            WriteTrialRow();
-        _hasPendingTrial = false;
-    }
-
-    private void WriteTrialRow()
-    {
-        if (_curTrialRowWritten) return;
-        if (!saveTrialCsv || _trialsWriter == null) { _curTrialRowWritten = true; return; }
-
-        string instr = _curOverallLogged ? _curInstrRefl.ToString(CultureInfo.InvariantCulture) : "";
-        string emo = _curOverallLogged ? _curEmoExpr.ToString(CultureInfo.InvariantCulture) : "";
-        string use = _curOverallLogged ? _curUseful.ToString(CultureInfo.InvariantCulture) : "";
-        string best = _curOverallLogged ? _curBestCandidate : "";
-
-        string row = string.Join(",", new string[]
-        {
-            Csv(participantId), Csv(_sessionId),
-            _curTrialIndex.ToString(CultureInfo.InvariantCulture),
-            Csv(_curPromptId), Csv(_curTargetClass), Csv(_curUserCommand),
-            Csv(_curSourcePath), Csv(_curParsedEffect), Csv(_curIntensity), Csv(_curConfidence),
-            Csv(_curViewPref), Csv(_curWarning), Csv(best),
-            instr, emo, use, Csv(Now())
-        });
-        _trialsWriter.WriteLine(row);
-        _trialsWriter.Flush();
-        _curTrialRowWritten = true;
-    }
-
-    private void WriteRawJson(string userCommand, IntentOutputData output)
+    private void WriteRawJson(string userCommand, string rawResponseJson)
     {
         if (!saveRawJson || _rawWriter == null) return;
-        var line = new RawLogLine
-        {
-            participant_id = participantId,
-            session_id = _sessionId,
-            trial_index = _curTrialIndex,
-            prompt_id = _curPromptId,
-            target_effect_class = _curTargetClass,
-            user_command = userCommand ?? "",
-            timestamp = Now(),
-            response = output
-        };
-        _rawWriter.WriteLine(JsonUtility.ToJson(line));
+        // response에는 서버 응답 원본 JSON을 그대로 삽입(이미 valid JSON). 없으면 null.
+        string resp = string.IsNullOrEmpty(rawResponseJson) ? "null" : rawResponseJson.Trim();
+        var sb = new StringBuilder(256);
+        sb.Append('{');
+        sb.Append("\"participant_id\":").Append(JsonStr(participantId)).Append(',');
+        sb.Append("\"session_id\":").Append(JsonStr(_sessionId)).Append(',');
+        sb.Append("\"trial_index\":").Append(_curTrialIndex.ToString(CultureInfo.InvariantCulture)).Append(',');
+        sb.Append("\"prompt_id\":").Append(JsonStr(_curPromptId)).Append(',');
+        sb.Append("\"target_effect_class\":").Append(JsonStr(_curTargetClass)).Append(',');
+        sb.Append("\"user_command\":").Append(JsonStr(userCommand ?? "")).Append(',');
+        sb.Append("\"timestamp\":").Append(JsonStr(Now())).Append(',');
+        sb.Append("\"response\":").Append(resp);
+        sb.Append('}');
+        _rawWriter.WriteLine(sb.ToString());
         _rawWriter.Flush();
     }
 
-    [Serializable]
-    private class RawLogLine
+    // JSON 문자열 값 escaping (양끝 따옴표 포함).
+    private static string JsonStr(string s)
     {
-        public string participant_id;
-        public string session_id;
-        public int trial_index;
-        public string prompt_id;
-        public string target_effect_class;
-        public string user_command;
-        public string timestamp;
-        public IntentOutputData response;
+        if (s == null) return "null";
+        var sb = new StringBuilder(s.Length + 2);
+        sb.Append('"');
+        foreach (char ch in s)
+        {
+            switch (ch)
+            {
+                case '"': sb.Append("\\\""); break;
+                case '\\': sb.Append("\\\\"); break;
+                case '\n': sb.Append("\\n"); break;
+                case '\r': sb.Append("\\r"); break;
+                case '\t': sb.Append("\\t"); break;
+                default:
+                    if (ch < 0x20) sb.Append("\\u").Append(((int)ch).ToString("x4", CultureInfo.InvariantCulture));
+                    else sb.Append(ch);
+                    break;
+            }
+        }
+        sb.Append('"');
+        return sb.ToString();
     }
 
     private static string Now()
@@ -433,10 +402,8 @@ public class StudySessionLogger : MonoBehaviour
 
     public void CloseSession()
     {
-        FinalizePendingTrial();
         CloseWriter(ref _trialsWriter);
         CloseWriter(ref _candidatesWriter);
-        CloseWriter(ref _ratingsWriter);
         CloseWriter(ref _rawWriter);
         _sessionStarted = false;
     }

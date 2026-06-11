@@ -27,10 +27,16 @@ public class IntentParserClient : MonoBehaviour
     [SerializeField] private StudySessionLogger studyLogger;
     private int _studyTrialIndex = 0;
 
+    // 입력 명령 길이 제한(영문 기준 250자). UI 타이핑/붙여넣기와 전송 가드에 동일 적용.
+    // 서버(server_gpt.py/server.py)와 정량 평가(evaluate.py)도 같은 250자 기준을 사용한다.
+    private const int MaxCommandLength = 250;
+
     private void Start()
     {
         if (sendButton != null)
             sendButton.onClick.AddListener(OnSendButtonClicked);
+        if (commandInput != null)
+            commandInput.characterLimit = MaxCommandLength;   // 250자 초과 입력 차단
     }
 
     private void OnSendButtonClicked()
@@ -39,6 +45,12 @@ public class IntentParserClient : MonoBehaviour
         if (string.IsNullOrWhiteSpace(command))
         {
             SetResult("Please enter a command.");
+            return;
+        }
+        // characterLimit과 별개의 이중 안전장치(코드로 text를 채우는 경우 등).
+        if (command.Length > MaxCommandLength)
+        {
+            SetResult("Command too long (" + command.Length + " chars). Max " + MaxCommandLength + " characters.");
             return;
         }
         StartCoroutine(SendIntentRequest(command));
@@ -89,7 +101,7 @@ public class IntentParserClient : MonoBehaviour
             {
                 _studyTrialIndex++;
                 studyLogger.SetCurrentTrialAuto(_studyTrialIndex);
-                studyLogger.LogTrialIntent(command, output);
+                studyLogger.LogTrialIntent(command, output, responseJson);
                 studyLogger.LogCandidates(_studyTrialIndex, candidateGenerator);
             }
         }
