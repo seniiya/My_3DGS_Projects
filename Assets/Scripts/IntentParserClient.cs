@@ -1,3 +1,7 @@
+// IntentParserClient.cs
+// Unity 클라이언트에서 명령어를 입력받아 서버에 전송하고, 서버로부터 의도 분석 결과를 받아 UI에 표시하는 스크립트입니다.
+
+
 using System;
 using System.Collections;
 using System.Text;
@@ -18,6 +22,10 @@ public class IntentParserClient : MonoBehaviour
 
     [Header("OCP")]
     [SerializeField] private CameraCandidateGenerator candidateGenerator;
+
+    [Header("Study Logging")]
+    [SerializeField] private StudySessionLogger studyLogger;
+    private int _studyTrialIndex = 0;
 
     private void Start()
     {
@@ -73,6 +81,17 @@ public class IntentParserClient : MonoBehaviour
             }
 
             ShowParsedResult(output);
+
+            // ── 사용자 평가 로깅 (추가 전용; 서버 호출/JSON 파싱/UI/PCCG 로직은 변경하지 않음) ──
+            // send 1회 = trial 1개. _studyTrialIndex는 1부터 자동 증가(1~20).
+            // SetCurrentTrialAuto가 trialPlan에서 prompt_id/target_effect_class를 채운다.
+            if (studyLogger != null)
+            {
+                _studyTrialIndex++;
+                studyLogger.SetCurrentTrialAuto(_studyTrialIndex);
+                studyLogger.LogTrialIntent(command, output);
+                studyLogger.LogCandidates(_studyTrialIndex, candidateGenerator);
+            }
         }
     }
 

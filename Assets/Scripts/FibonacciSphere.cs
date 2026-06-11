@@ -1,3 +1,6 @@
+// FibonacciSphere.cs
+// 구면 위에 균등하게 점을 배치하는 스크립트입니다
+
 using UnityEngine;
 
 public class FibonacciSphere : MonoBehaviour

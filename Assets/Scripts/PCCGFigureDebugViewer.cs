@@ -1,3 +1,6 @@
+// PCCGFigureDebugViewer.cs
+// PCCG의 샘플링, 필터링, 스코어링 결과를 시각화하여 디버깅과 논문용 그림 캡처에 활용하는 스크립트입니다.
+
 using System.Collections.Generic;
 using System.IO;
 using UnityEngine;

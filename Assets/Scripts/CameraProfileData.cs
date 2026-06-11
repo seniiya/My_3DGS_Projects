@@ -51,4 +51,8 @@ public class IntentOutputData
     public string view_preference;
     public string intensity;
     public CameraProfileData profile;
+    // 서버 응답에 이미 포함된 필드. 사용자 평가 로깅(StudySessionLogger)에서 사용.
+    // (추가만; 기존 역직렬화/사용 코드에는 영향 없음)
+    public string source_path;
+    public string confidence;
 }
