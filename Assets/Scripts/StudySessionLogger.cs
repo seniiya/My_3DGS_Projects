@@ -6,7 +6,6 @@
 //   - 사용자가 입력한 자연어 명령
 //   - 서버 intent parsing 결과(effect_class/source_path/intensity/confidence/view_preference/profile)
 //   - Unity PCCG가 생성한 topCandidates 후보 정보
-//   - (선택) 후보별/전체 사용자 평가 점수, 스크린샷
 // 을 CSV/JSONL로 저장한다.
 //
 // ※ 이 컴포넌트는 기존 PCCG 후보 생성/필터링/scoring/trajectory 로직과 서버 통신 로직을
@@ -50,15 +49,14 @@ public class StudySessionLogger : MonoBehaviour
 
     // ── CSV headers (스펙 고정) ────────────────────────────────────────────────
     private const string TRIALS_HEADER =
-        "participant_id,session_id,trial_index,prompt_id,target_effect_class,user_command,source_path,parsed_effect_class,intensity,confidence,view_preference,warning,timestamp";
+        "participant_id,session_id,trial_index,prompt_id,target_effect_class,user_command,source_path,parsed_effect_class,intensity,confidence,view_preference,warning,timestamp,latency_s";
     private const string CANDIDATES_HEADER =
-        "participant_id,session_id,trial_index,prompt_id,target_effect_class,candidate_id,position_x,position_y,position_z,rotation_x,rotation_y,rotation_z,total_score,h_over_h,elevation_deg,tilt_deg,angle_score,scale_score,view_score,screenshot_path,timestamp";
+        "participant_id,session_id,trial_index,prompt_id,target_effect_class,candidate_id,position_x,position_y,position_z,rotation_x,rotation_y,rotation_z,total_score,h_over_h,elevation_deg,tilt_deg,angle_score,scale_score,view_score,timestamp";
 
     // ── Session state ─────────────────────────────────────────────────────────
     private bool _sessionStarted;
     private string _sessionId;
     private string _sessionFolder;
-    private string _screenshotFolder;
     private StreamWriter _trialsWriter;
     private StreamWriter _candidatesWriter;
     private StreamWriter _rawWriter;
@@ -86,8 +84,6 @@ public class StudySessionLogger : MonoBehaviour
             string root = Application.persistentDataPath + "/StudyLogs/";
             _sessionFolder = Path.Combine(root, folderName);
             Directory.CreateDirectory(_sessionFolder);
-            _screenshotFolder = Path.Combine(_sessionFolder, "screenshots");
-            Directory.CreateDirectory(_screenshotFolder);
 
             var csvEnc = new UTF8Encoding(true);   // BOM → Excel에서 한글 정상 표시
             var jsonEnc = new UTF8Encoding(false);
@@ -197,12 +193,13 @@ public class StudySessionLogger : MonoBehaviour
     }
 
     // rawResponseJson: 서버 응답 원본 문자열(IntentParserClient의 responseJson). 있으면 raw jsonl에 그대로 저장.
-    public void LogTrialIntent(string userCommand, IntentOutputData output, string rawResponseJson = null)
+    // latencySeconds: Send 클릭 → 후보 생성 완료까지의 총 시간(초). 음수면 미측정으로 빈 값 기록.
+    public void LogTrialIntent(string userCommand, IntentOutputData output, string rawResponseJson = null, float latencySeconds = -1f)
     {
         EnsureSession();
         if (_curTrialIndex <= 0) _curTrialIndex = 1;   // SetCurrentTrial 누락 시 안전장치
 
-        // trials.csv: 13컬럼이 이 시점에 모두 확보됨 → 즉시 1행 기록 + flush (유실 방지)
+        // trials.csv: 14컬럼이 이 시점에 모두 확보됨 → 즉시 1행 기록 + flush (유실 방지)
         if (saveTrialCsv && _trialsWriter != null)
         {
             string row = string.Join(",", new string[]
@@ -216,7 +213,8 @@ public class StudySessionLogger : MonoBehaviour
                 Csv(output != null ? output.confidence : ""),
                 Csv(output != null ? output.view_preference : ""),
                 Csv(output != null ? output.warning : ""),
-                Csv(Now())
+                Csv(Now()),
+                latencySeconds >= 0f ? F(latencySeconds) : ""
             });
             _trialsWriter.WriteLine(row);
             _trialsWriter.Flush();
@@ -240,9 +238,6 @@ public class StudySessionLogger : MonoBehaviour
 
             string candidateId = "C" + (i + 1).ToString(CultureInfo.InvariantCulture);   // C1/C2/C3
             Vector3 euler = c.rotation.eulerAngles;
-            // 스크린샷은 CaptureCandidateScreenshot()이 같은 규칙으로 저장하므로 경로를 미리 기록.
-            string shotPath = "screenshots/T" + trialIndex.ToString("00", CultureInfo.InvariantCulture)
-                              + "_" + candidateId + ".png";
 
             string row = string.Join(",", new string[]
             {
@@ -253,7 +248,7 @@ public class StudySessionLogger : MonoBehaviour
                 F(euler.x), F(euler.y), F(euler.z),
                 F(c.totalScore), F(c.hOverH), F(c.elevationDeg), F(c.tiltDeg),
                 F(c.angleScore), F(c.scaleScore), F(c.viewScore),
-                Csv(shotPath), Csv(Now())
+                Csv(Now())
             });
             _candidatesWriter.WriteLine(row);
         }
@@ -262,55 +257,7 @@ public class StudySessionLogger : MonoBehaviour
 
     // 후보별/trial 전체 평가는 프로토콜상 외부 설문/엑셀에서 수집한다(Unity 미저장).
     // 따라서 LogCandidateRating / LogOverallTrialEvaluation / ratings.csv 는 두지 않는다.
-
-    public string CaptureCandidateScreenshot(int trialIndex, string candidateId, Camera previewCamera)
-    {
-        if (previewCamera == null)
-        {
-            Debug.LogWarning("[StudySessionLogger] CaptureCandidateScreenshot: previewCamera is null.");
-            return "";
-        }
-        EnsureSession();
-        if (string.IsNullOrEmpty(_screenshotFolder)) return "";
-
-        int w = previewCamera.pixelWidth > 0 ? previewCamera.pixelWidth : Screen.width;
-        int h = previewCamera.pixelHeight > 0 ? previewCamera.pixelHeight : Screen.height;
-        if (w <= 0) w = 1280;
-        if (h <= 0) h = 720;
-
-        RenderTexture rt = new RenderTexture(w, h, 24);
-        RenderTexture prevTarget = previewCamera.targetTexture;
-        RenderTexture prevActive = RenderTexture.active;
-        Texture2D tex = new Texture2D(w, h, TextureFormat.RGB24, false);
-        string relPath = "";
-        try
-        {
-            previewCamera.targetTexture = rt;
-            previewCamera.Render();
-            RenderTexture.active = rt;
-            tex.ReadPixels(new Rect(0, 0, w, h), 0, 0);
-            tex.Apply(false);
-
-            byte[] png = tex.EncodeToPNG();
-            string fileName = "T" + trialIndex.ToString("00", CultureInfo.InvariantCulture)
-                              + "_" + SanitizeFileName(candidateId) + ".png";
-            File.WriteAllBytes(Path.Combine(_screenshotFolder, fileName), png);
-            relPath = "screenshots/" + fileName;
-        }
-        catch (Exception e)
-        {
-            Debug.LogError("[StudySessionLogger] screenshot failed: " + e.Message);
-        }
-        finally
-        {
-            // 원래 카메라 상태 복원 — preview/PCCG 동작에 영향 없음
-            previewCamera.targetTexture = prevTarget;
-            RenderTexture.active = prevActive;
-            if (Application.isPlaying) { Destroy(rt); Destroy(tex); }
-            else { DestroyImmediate(rt); DestroyImmediate(tex); }
-        }
-        return relPath;
-    }
+    // 후보 스크린샷도 저장하지 않는다 — 후보 pose(position/rotation)가 CSV에 있어 재현 가능.
 
     // ── Internal helpers ──────────────────────────────────────────────────────
 
@@ -384,15 +331,6 @@ public class StudySessionLogger : MonoBehaviour
                          || s.IndexOf('\n') >= 0 || s.IndexOf('\r') >= 0;
         if (needQuote) return "\"" + s.Replace("\"", "\"\"") + "\"";
         return s;
-    }
-
-    private static string SanitizeFileName(string s)
-    {
-        if (string.IsNullOrEmpty(s)) return "candidate";
-        var sb = new StringBuilder(s.Length);
-        foreach (char ch in s)
-            sb.Append((char.IsLetterOrDigit(ch) || ch == '_' || ch == '-') ? ch : '_');
-        return sb.ToString();
     }
 
     private void OnApplicationQuit()

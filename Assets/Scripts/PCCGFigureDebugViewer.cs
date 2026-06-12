@@ -51,9 +51,18 @@ public class PCCGFigureDebugViewer : MonoBehaviour
     private Material _topMat;
     private Material _lineMat;
 
+    private int _debugVizLayer = -1;
+
     void Start()
     {
         PrepareMaterials();
+        _debugVizLayer = LayerMask.NameToLayer(CameraCandidateGenerator.DebugVizLayerName);
+    }
+
+    void ApplyDebugVizLayer(GameObject obj)
+    {
+        if (_debugVizLayer >= 0)
+            obj.layer = _debugVizLayer;
     }
 
     void Update()
@@ -192,6 +201,7 @@ public class PCCGFigureDebugViewer : MonoBehaviour
     GameObject CreateSphere(Vector3 pos, float size, Material mat, string name)
     {
         GameObject obj = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+        ApplyDebugVizLayer(obj);
         obj.name = name;
         obj.transform.position = pos;
         obj.transform.localScale = Vector3.one * size;
@@ -211,6 +221,7 @@ public class PCCGFigureDebugViewer : MonoBehaviour
     void CreateLookLine(Vector3 pos, Quaternion rot, float length)
     {
         GameObject obj = new GameObject("CandidateLookLine");
+        ApplyDebugVizLayer(obj);
         LineRenderer lr = obj.AddComponent<LineRenderer>();
 
         lr.positionCount = 2;
@@ -229,6 +240,7 @@ public class PCCGFigureDebugViewer : MonoBehaviour
     void CreateLabel(Vector3 pos, string text)
     {
         GameObject obj = new GameObject("FigureLabel");
+        ApplyDebugVizLayer(obj);
         obj.transform.position = pos;
 
         TextMesh tm = obj.AddComponent<TextMesh>();

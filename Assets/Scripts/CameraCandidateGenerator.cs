@@ -239,6 +239,26 @@ public class CameraCandidateGenerator : MonoBehaviour
         public float outsideSpacePenalty;
     }
 
+    public const string DebugVizLayerName = "DebugViz";
+
+    [Header("Debug Visualization")]
+    [Tooltip("켜면 previewCamera(Game 뷰)에서 DebugViz 레이어를 숨깁니다. 논문 figure 캡처 시에는 꺼주세요.")]
+    public bool hideDebugVizInGameView = true;
+
+    void Start()
+    {
+        // 디버그 시각화(동선 라인 등)가 평가용 Game 화면에 보이지 않도록 previewCamera에서 DebugViz 레이어를 제외
+        int debugVizLayer = LayerMask.NameToLayer(DebugVizLayerName);
+        if (debugVizLayer < 0)
+        {
+            Debug.LogWarning($"[PCCG] Layer '{DebugVizLayerName}' is not defined in Tags and Layers. Debug visuals will remain visible in the Game view.");
+        }
+        else if (previewCamera != null && hideDebugVizInGameView)
+        {
+            previewCamera.cullingMask &= ~(1 << debugVizLayer);
+        }
+    }
+
     void Update()
     {
         if (enableNumberKeyCandidatePreview)
@@ -1894,6 +1914,9 @@ public class CameraCandidateGenerator : MonoBehaviour
         {
             GameObject lineObj = new GameObject("TrajectoryLine");
             lineObj.transform.SetParent(transform);
+            int debugVizLayer = LayerMask.NameToLayer(DebugVizLayerName);
+            if (debugVizLayer >= 0)
+                lineObj.layer = debugVizLayer;
             _trajectoryLine = lineObj.AddComponent<LineRenderer>();
             _trajectoryLine.material = new Material(Shader.Find("Sprites/Default"));
             _trajectoryLine.startWidth = 0.05f;
