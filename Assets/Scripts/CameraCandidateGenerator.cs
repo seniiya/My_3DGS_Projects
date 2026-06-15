@@ -290,6 +290,14 @@ public class CameraCandidateGenerator : MonoBehaviour
                 ApplyCandidateByIndex(3);
             else if (Input.GetKeyDown(KeyCode.Alpha5) || Input.GetKeyDown(KeyCode.Keypad5))
                 ApplyCandidateByIndex(4);
+            // 키 6/7/8: 정지 후보 프리뷰가 아니라 동선(trajectory) 재생. 역할이 다르다.
+            //   6→trajectoryCandidates[0], 7→[1], 8→[2]. 생성된 동선 수보다 큰 키는 내부에서 경고 후 무시.
+            else if (Input.GetKeyDown(KeyCode.Alpha6) || Input.GetKeyDown(KeyCode.Keypad6))
+                PlayTrajectoryByIndex(0);
+            else if (Input.GetKeyDown(KeyCode.Alpha7) || Input.GetKeyDown(KeyCode.Keypad7))
+                PlayTrajectoryByIndex(1);
+            else if (Input.GetKeyDown(KeyCode.Alpha8) || Input.GetKeyDown(KeyCode.Keypad8))
+                PlayTrajectoryByIndex(2);
         }
 
         if (followAnimatedTarget &&
@@ -1987,19 +1995,38 @@ public class CameraCandidateGenerator : MonoBehaviour
         }
     }
 
+    // best(0번) 동선 재생. ApplyProfileAndGenerate 끝에서 자동 재생되는 기존 진입점.
+    // 동작 보존을 위해 내부적으로 PlayTrajectoryByIndex(0)로 위임한다.
     public void PlayBestTrajectory()
+    {
+        PlayTrajectoryByIndex(0);
+    }
+
+    // 특정 인덱스 동선 재생(키 6/7/8 → 0/1/2). 동작은 기존 PlayBestTrajectory와 동일하되 대상만 trajIndex.
+    // 동선이 그 개수만큼 없으면 경고 후 무시(크래시 방지). 생성된 개수만큼만 동작한다.
+    public void PlayTrajectoryByIndex(int trajIndex)
     {
         if (trajectoryCandidates == null || trajectoryCandidates.Count == 0)
         {
             Debug.LogWarning("[PCCG] No trajectory candidates to play.");
             return;
         }
+        if (trajIndex < 0 || trajIndex >= trajectoryCandidates.Count)
+        {
+            Debug.LogWarning($"[PCCG] Trajectory #{trajIndex + 1} not available. trajectoryCandidates.Count={trajectoryCandidates.Count}");
+            return;
+        }
+
+        var traj = trajectoryCandidates[trajIndex];
+
         StopAllCoroutines();
         isPlayingTrajectory = false;
         hasFollowOffset = false;
         currentPreviewCandidateIndex = -1;
-        DrawTrajectoryLine(trajectoryCandidates[0]);
-        StartCoroutine(PlayTrajectoryCoroutine(trajectoryCandidates[0]));
+        DrawTrajectoryLine(traj);
+        StartCoroutine(PlayTrajectoryCoroutine(traj));
+
+        Debug.Log($"[PCCG] Playing trajectory #{trajIndex + 1} (score={traj.trajectoryScore:F3}) of {trajectoryCandidates.Count}");
     }
 
     IEnumerator PlayTrajectoryCoroutine(CameraTrajectory traj)
