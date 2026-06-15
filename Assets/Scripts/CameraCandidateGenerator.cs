@@ -237,6 +237,9 @@ public class CameraCandidateGenerator : MonoBehaviour
         public float scaleScore;
         public float viewScore;
         public float tiltDeg;
+        // >0이면 이 후보를 카메라에 적용할 때 강제할 FOV(도). 0=미설정(일반 후보) → 기존 FOV 로직 사용.
+        // high_angle 직접 배치 후보(BuildOverheadCandidate)만 이 값을 채운다.
+        public float fovForCandidate;
     }
 
     [System.Serializable]
@@ -1019,7 +1022,11 @@ public class CameraCandidateGenerator : MonoBehaviour
         hasFollowOffset = true;
         previewCamera.transform.position = best.position;
         previewCamera.transform.rotation = best.rotation;
-        ApplyFOVForSelectedCandidate(best);
+        // high_angle 직접 배치 후보는 역산 FOV를 그대로 적용(기존 FOV 로직보다 우선). 0이면 기존 동작.
+        if (best.fovForCandidate > 0f)
+            previewCamera.fieldOfView = best.fovForCandidate;
+        else
+            ApplyFOVForSelectedCandidate(best);
         currentPreviewCandidateIndex = 0;
         Debug.Log($"[PCCG] Camera placed at {best.position} (score={best.totalScore:F3})");
     }
@@ -1069,7 +1076,11 @@ public class CameraCandidateGenerator : MonoBehaviour
             previewCamera.transform.rotation = Quaternion.LookRotation(lookDir, Vector3.up);
         else
             previewCamera.transform.rotation = candidate.rotation;
-        ApplyFOVForSelectedCandidate(candidate);
+        // high_angle 직접 배치 후보는 역산 FOV를 그대로 적용(기존 FOV 로직보다 우선). 0이면 기존 동작.
+        if (candidate.fovForCandidate > 0f)
+            previewCamera.fieldOfView = candidate.fovForCandidate;
+        else
+            ApplyFOVForSelectedCandidate(candidate);
         currentPreviewCandidateIndex = index;
 
         Debug.Log(
@@ -1972,6 +1983,122 @@ public class CameraCandidateGenerator : MonoBehaviour
         });
     }
 
+    // high_angle 전용: birds-eye와 동일한 "천장 측정 → 거리 역산 → 직접 배치" 메커니즘으로
+    // 천장 아래 가능한 높이에서 목표 부감각 θ(도)의 카메라 후보 1개를 만든다.
+    // ※ birds-eye와 달리 topCandidates를 비우지 않는다 — 호출부가 eye_level 결과에 "추가"만 한다.
+    // 배치 불가(천장 없음 / 천장 여유 부족 / 충돌·가시성·내부 검사 실패)면 null 반환.
+    private CameraCandidate BuildOverheadCandidate(float targetThetaDeg)
+    {
+        if (characterRoot == null || previewCamera == null)
+            return null;
+
+        Vector3 pivotPoint = GetPivotPoint();
+        Vector3 lookTargetPoint = GetLookTargetPoint();
+
+        // ── 천장 높이 측정: birds-eye와 동일한 9-probe 상향 raycast (offsets {0,1.5,-1.5}, 20m) ──
+        float highestCeiling = float.MinValue;
+        int hitCount = 0;
+        float[] probeOffsets = { 0f, 1.5f, -1.5f };
+        foreach (float ox in probeOffsets)
+            foreach (float oz in probeOffsets)
+            {
+                Vector3 origin = pivotPoint + new Vector3(ox, 0.1f, oz);
+                if (Physics.Raycast(origin, Vector3.up, out RaycastHit ch, 20f, environmentLayer))
+                {
+                    hitCount++;
+                    if (ch.point.y > highestCeiling) highestCeiling = ch.point.y;
+                }
+            }
+        if (hitCount == 0)
+        {
+            Debug.Log("[PCCG] BuildOverheadCandidate: no ceiling detected → null.");
+            return null;
+        }
+
+        // 사용 가능한 최대 높이(lookTarget 기준 상대), 안전계수 0.9.
+        float hMax = (highestCeiling - lookTargetPoint.y) * 0.9f;
+        if (hMax <= 0.3f)
+        {
+            Debug.Log($"[PCCG] BuildOverheadCandidate: ceiling clearance too low (hMax={hMax:F2}) → null.");
+            return null;
+        }
+
+        // 수평 방향 = 인물 정면(characterRoot.forward, 수평 투영). 기존 unspecified 정면 반구(azimuth≈0)와 일관.
+        Vector3 horiz = characterRoot.forward;
+        horiz.y = 0f;
+        if (horiz.sqrMagnitude < 1e-4f) horiz = Vector3.forward;
+        horiz.Normalize();
+
+        LayerMask combinedLayer = environmentLayer | characterLayer;
+        float subjectHeightM = GetReferenceSubjectHeight();
+        float targetHOverH = (hOverH_min + hOverH_max) * 0.5f;   // 프로파일 h/H 중앙값
+
+        // 목표 θ에서 D 역산 → 충돌/가시성/내부 검사. 실패하면 θ를 2도씩 낮춰 26도까지 재시도.
+        for (float theta = targetThetaDeg; theta >= 26f; theta -= 2f)
+        {
+            float tanT = Mathf.Tan(theta * Mathf.Deg2Rad);
+            if (tanT <= 0.0001f) continue;
+            float dHoriz = hMax / tanT;                                  // 수평 거리 역산
+            Vector3 pos = lookTargetPoint + horiz * dHoriz + Vector3.up * hMax;
+
+            if (Physics.CheckSphere(pos, COLLISION_RADIUS, combinedLayer)) continue;
+            if (!HasLineOfSight(pos, lookTargetPoint)) continue;
+            if (!IsInsideSpaceByRaycast(pos)) continue;
+
+            // ── 배치 성공: scoring은 일반 후보와 "동일 공식"(특혜 점수 금지) ──
+            Quaternion lookRot = Quaternion.LookRotation(lookTargetPoint - pos, Vector3.up);
+            float geomTilt = ComputeCameraTiltDeg(pos, lookTargetPoint);   // 부감 → 음수(≈ -θ)
+            // high_angle range는 이 프로젝트 표에서 +30~40(부감 "크기")로 정의되므로,
+            // scoring/기록 tilt는 그 부호 규약에 맞춰 양수 크기(|geomTilt|≈θ)를 사용한다.
+            float tiltForScore = Mathf.Abs(geomTilt);
+
+            float angleScore = ComputeAngleScore(tiltForScore);
+            float scaleScore = ComputeScaleScore(targetHOverH);           // 목표 h/H 기준
+            float viewScore  = ComputeViewPreferenceScore(pos);
+
+            bool hasViewPreference =
+                !string.IsNullOrEmpty(viewPreference) &&
+                viewPreference.Trim().ToLowerInvariant() != "unspecified";
+
+            float totalScore;
+            if (hasViewPreference)
+                totalScore = angleScore * anglePriority * 0.30f + scaleScore * 0.30f + viewScore * 0.40f;
+            else
+                totalScore = angleScore * anglePriority * 0.50f + scaleScore * 0.50f;
+            totalScore *= ComputeIntensityScaleBias(targetHOverH);
+
+            // shot size 보정: 이 D에서 targetHOverH가 나오도록 FOV 역산(10~90도 clamp).
+            float dActual = Vector3.Distance(pos, lookTargetPoint);
+            float fovForCandidate = 0f;
+            if (dActual > 0.001f && targetHOverH > 0.001f)
+            {
+                float fovRad = 2f * Mathf.Atan(subjectHeightM / (2f * dActual * targetHOverH));
+                fovForCandidate = Mathf.Clamp(fovRad * Mathf.Rad2Deg, 10f, 90f);
+            }
+
+            float elevDeg = Mathf.Asin(Mathf.Clamp((pos - pivotPoint).normalized.y, -1f, 1f)) * Mathf.Rad2Deg;
+
+            Debug.Log($"[PCCG] forced high_angle added: theta={theta:F0}, D={dActual:F2}, h={hMax:F2}, FOV={fovForCandidate:F1}, tilt={tiltForScore:F1}");
+
+            return new CameraCandidate
+            {
+                position        = pos,
+                rotation        = lookRot,
+                totalScore      = totalScore,
+                elevationDeg    = elevDeg,
+                hOverH          = targetHOverH,
+                angleScore      = angleScore,
+                scaleScore      = scaleScore,
+                viewScore       = viewScore,
+                tiltDeg         = tiltForScore,
+                fovForCandidate = fovForCandidate
+            };
+        }
+
+        Debug.Log($"[PCCG] BuildOverheadCandidate(theta={targetThetaDeg:F0}): all retries rejected (collision/LOS/inside) → null.");
+        return null;
+    }
+
     // Bird's-eye profile: trajectory 없이 best static placement만 적용
     void ApplyStaticCameraPlacement()
     {
@@ -2399,6 +2526,58 @@ public class CameraCandidateGenerator : MonoBehaviour
             _ignoreUnspecifiedFrontFilter = true;
             GenerateCandidates();
             _ignoreUnspecifiedFrontFilter = false;
+        }
+
+        // ── Tense 전용: high_angle 후보 직접 배치(천장 제약으로 샘플링에서 전부 탈락하는 문제 보정) ──
+        // 판정은 하드코딩이 아니라 "원본 angle_ranges에 min_deg>=25인 range가 있는가"로 한다.
+        //   Tense의 high_angle(원본 +30~40)만 해당. Relaxed의 low_angle은 원본이 -40~-30이라 제외.
+        //   birds-eye(-90~-75)/ground·eye_level(-12~12)/Delighted/Sadness 모두 min_deg<25라 트리거 안 됨.
+        if (!isBirdsEyeProfile && !isGroundLevelProfile && !isLowAngleProfile &&
+            prof.angle_ranges != null && prof.angle_ranges.Exists(r => r.min_deg >= 25f))
+        {
+            // 중복 방지 가드: 이미 샘플링 결과(topCandidates)에 충분한 high(|tilt|>=25) 후보가 있으면 직접 배치 생략.
+            int sampledHigh = 0;
+            foreach (var c in topCandidates)
+                if (c != null && Mathf.Abs(c.tiltDeg) >= 25f) sampledHigh++;
+
+            if (sampledHigh >= 2)
+            {
+                Debug.Log($"[PCCG] high_angle direct placement skipped ({sampledHigh} sampled high candidates exist).");
+            }
+            else
+            {
+                // high 후보는 최대 2개까지만 만들어 eye_level 후보를 밀어내지 않게 한다.
+                var highCands = new List<CameraCandidate>();
+                var h1 = BuildOverheadCandidate(32f);
+                if (h1 != null) highCands.Add(h1);
+                var h2 = BuildOverheadCandidate(38f);
+                if (h2 != null) highCands.Add(h2);
+
+                if (highCands.Count > 0)
+                {
+                    int beforeCount = topCandidates.Count;
+                    foreach (var hc in highCands)
+                        topCandidates.Add(hc);
+
+                    // 일반 후보와 동일 점수 기준 내림차순 재정렬 후 topK개로 컷.
+                    // topCandidates[0]이 항상 실제 최고점이라는 불변식은 이 재정렬로 유지된다.
+                    topCandidates.Sort((a, b) => b.totalScore.CompareTo(a.totalScore));
+                    int take = Mathf.Min(topK, topCandidates.Count);
+                    topCandidates = topCandidates.GetRange(0, take);
+
+                    Debug.Log($"[PCCG] high_angle merged: added {highCands.Count} forced (was {beforeCount}, now {topCandidates.Count}, topK={topK}).");
+
+                    // [검증 로그] 병합 후 top 후보 tilt 분포 — eye_level군(tilt≈0)과 high_angle군(tilt≈32/38)이
+                    //   실제로 함께 있는지 확인. (GenerateCandidates의 동일 로그는 병합 전이라 high가 안 보임.)
+                    var tsb = new System.Text.StringBuilder();
+                    for (int ti = 0; ti < topCandidates.Count; ti++)
+                    {
+                        if (ti > 0) tsb.Append(", ");
+                        tsb.Append($"c{ti + 1}(tilt={topCandidates[ti].tiltDeg:F1},a={topCandidates[ti].angleScore:F2},fov={topCandidates[ti].fovForCandidate:F0})");
+                    }
+                    Debug.Log($"[PCCG] Top candidate tilts (post high_angle merge): [{tsb}]");
+                }
+            }
         }
 
         if (isBirdsEyeProfile)
