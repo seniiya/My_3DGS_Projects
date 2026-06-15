@@ -146,6 +146,15 @@ public class CameraCandidateGenerator : MonoBehaviour
     public bool enableNumberKeyCandidatePreview = true;
     public int currentPreviewCandidateIndex = -1;
 
+    [Header("Qualitative Study Logging")]
+    [Tooltip("정성 사용자 평가 로거. Inspector에서 연결(없으면 키 입력 로깅은 생략). null 허용.")]
+    public StudySessionLogger studyLogger;
+
+    // 표시용 키 매핑: _keyToCandidateIndex[k] = 숫자키 (k+1) 을 눌렀을 때 표시할 실제 후보 인덱스(0=top1...).
+    // ★ topCandidates 자체의 순서(점수 내림차순 top1~top5)는 절대 바꾸지 않는다.
+    //   셔플은 오직 "어떤 키가 어떤 순위 후보를 보여줄지"에만 적용된다. topCandidates[0]은 항상 실제 top1.
+    private int[] _keyToCandidateIndex = new int[0];
+
     [Header("Animated Target Follow")]
     public bool followAnimatedTarget = true;
     private bool hasFollowOffset = false;
@@ -263,6 +272,8 @@ public class CameraCandidateGenerator : MonoBehaviour
     {
         if (enableNumberKeyCandidatePreview)
         {
+            // 인자는 이제 "키 번호 인덱스"(0=키1 ... 4=키5)다. 실제 후보 인덱스로의 변환은
+            // ApplyCandidateByIndex 내부에서 셔플된 _keyToCandidateIndex 매핑으로 처리한다.
             if (Input.GetKeyDown(KeyCode.Alpha1) || Input.GetKeyDown(KeyCode.Keypad1))
                 ApplyCandidateByIndex(0);
             else if (Input.GetKeyDown(KeyCode.Alpha2) || Input.GetKeyDown(KeyCode.Keypad2))
@@ -989,13 +1000,24 @@ public class CameraCandidateGenerator : MonoBehaviour
         Debug.Log($"[PCCG] Camera placed at {best.position} (score={best.totalScore:F3})");
     }
 
-    public void ApplyCandidateByIndex(int index)
+    // keyIndex: 0=숫자키1 ... 4=숫자키5. 실제로 표시할 후보 인덱스는 셔플된 매핑(_keyToCandidateIndex)을 거쳐 결정된다.
+    public void ApplyCandidateByIndex(int keyIndex)
     {
         if (topCandidates == null || topCandidates.Count == 0)
         {
             Debug.LogWarning("[PCCG] No candidates to preview.");
             return;
         }
+
+        // 키 번호 → 후보 인덱스 변환. 매핑 범위를 벗어난 키는 무시한다(후보가 5개 미만일 때도 안전).
+        if (_keyToCandidateIndex == null || keyIndex < 0 || keyIndex >= _keyToCandidateIndex.Length)
+        {
+            Debug.LogWarning($"[PCCG] Key #{keyIndex + 1} is not mapped to any candidate " +
+                             $"(mappedKeys={(_keyToCandidateIndex != null ? _keyToCandidateIndex.Length : 0)}).");
+            return;
+        }
+
+        int index = _keyToCandidateIndex[keyIndex];
 
         if (index < 0 || index >= topCandidates.Count)
         {
@@ -1033,6 +1055,85 @@ public class CameraCandidateGenerator : MonoBehaviour
             $"h/H={candidate.hOverH:F3}, angleScore={candidate.angleScore:F3}, " +
             $"scaleScore={candidate.scaleScore:F3}, viewScore={candidate.viewScore:F3}"
         );
+
+        // ── 정성 평가 로그: 누른 키 번호와 실제 표시된 후보(순위)를 key_presses.csv에 기록 ──
+        // [검증 포인트] 같은 키를 여러 번 눌러도 _keyToCandidateIndex는 시행 내내 고정이므로
+        //   index(=후보 인덱스)와 shownRank가 항상 동일하게 기록된다. press_count만 1씩 증가한다.
+        if (studyLogger != null)
+        {
+            int keyPressed = keyIndex + 1;     // 1~5 (사용자가 실제로 누른 키)
+            int shownRank = index + 1;         // 표시된 후보의 실제 순위(top 몇 위)
+            string shownCandidateId = "C" + shownRank.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            studyLogger.LogKeyPress(keyPressed, shownCandidateId, shownRank);
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Candidate display-key shuffling (정성 평가용)
+    // ═══════════════════════════════════════════════════════════════════════
+
+    // 한 시행(= ApplyProfileAndGenerate 1회)마다 호출되어 키→후보 매핑을 새로 섞는다.
+    // ★ 셔플 대상 개수는 "오직" topCandidates.Count 다. topK / topTrajectoryK / candidatesPerTrial 등
+    //   다른 상수는 절대 사용하지 않는다(이 값들이 3으로 새어 들어가면 index 3,4가 제자리에 고정됨).
+    // ★ topCandidates의 내용/순서는 건드리지 않는다. 표시 매핑(_keyToCandidateIndex)만 바뀐다.
+    public void ShuffleCandidateKeyMapping()
+    {
+        // 셔플 길이는 반드시 실제 후보 개수에서만 가져온다.
+        int n = (topCandidates != null) ? topCandidates.Count : 0;
+
+        // [진단] n이 topCandidates.Count와 일치하는지, 다른 상수(topK 등)가 3으로 제한하고 있지 않은지 확인.
+        // 후보가 5개면 여기서 n=5, loopRange=[4..1], arraySize=5 로 찍혀야 정상.
+        Debug.Log(
+            $"[PCCG][ShuffleDbg] n(shuffleLen)={n}, topCandidates.Count={(topCandidates != null ? topCandidates.Count : 0)}, " +
+            $"topK={topK}, topTrajectoryK={topTrajectoryK}, arraySize={n}, loopRange=[{n - 1}..1], randMax(exclusive)={n}"
+        );
+
+        // 존재하는 후보 개수(n)만큼만 매핑 생성(후보가 5개 미만이어도 안전, 5개면 5개 전부 대상).
+        _keyToCandidateIndex = new int[n];
+        for (int i = 0; i < n; i++)
+            _keyToCandidateIndex[i] = i;
+
+        // Fisher-Yates shuffle — 상한(i), 배열 크기, Random.Range 범위가 모두 n(=topCandidates.Count) 기준.
+        // i가 n-1(=마지막 인덱스)부터 시작하므로 index 3,4를 포함한 모든 인덱스가 섞일 수 있다.
+        for (int i = n - 1; i > 0; i--)
+        {
+            int j = UnityEngine.Random.Range(0, i + 1);   // [0, i] 포함 → 자기 자신과의 swap도 허용(정상 Fisher-Yates)
+            int tmp = _keyToCandidateIndex[i];
+            _keyToCandidateIndex[i] = _keyToCandidateIndex[j];
+            _keyToCandidateIndex[j] = tmp;
+        }
+
+        if (n > 0)
+        {
+            var sb = new System.Text.StringBuilder();
+            for (int k = 0; k < n; k++)
+            {
+                if (k > 0) sb.Append(", ");
+                sb.Append("key").Append(k + 1).Append("→top").Append(_keyToCandidateIndex[k] + 1);
+            }
+            // 정상 동작 시: N이 5로 찍히고, 여러 번 실행하면 key4·key5도 다른 top으로 배정된다.
+            Debug.Log($"[PCCG] Candidate key mapping shuffled ({n} keys): {sb}");
+        }
+    }
+
+    // 키 번호(1~5) → 표시되는 실제 후보 인덱스(0=top1...). 매핑 범위를 벗어나면 -1.
+    public int GetCandidateIndexForKey(int keyNumber1to5)
+    {
+        int k = keyNumber1to5 - 1;
+        if (_keyToCandidateIndex == null || k < 0 || k >= _keyToCandidateIndex.Length)
+            return -1;
+        return _keyToCandidateIndex[k];
+    }
+
+    // 역참조: 후보 인덱스(rank-1) → 그 후보가 배정된 키 번호(1~5). 매핑이 없으면 -1.
+    // candidates.csv의 assigned_key 컬럼을 채울 때 logger가 사용한다.
+    public int GetKeyNumberForCandidateIndex(int candidateIndex)
+    {
+        if (_keyToCandidateIndex == null) return -1;
+        for (int k = 0; k < _keyToCandidateIndex.Length; k++)
+            if (_keyToCandidateIndex[k] == candidateIndex)
+                return k + 1;
+        return -1;
     }
 
     void ApplyCameraFOV()
@@ -2180,5 +2281,9 @@ public class CameraCandidateGenerator : MonoBehaviour
             if (trajectoryCandidates != null && trajectoryCandidates.Count > 0)
                 PlayBestTrajectory();
         }
+
+        // ★ 후보·trajectory 생성이 모두 끝난 뒤, 이번 시행의 키→후보 표시 매핑을 1회 새로 섞는다.
+        //   (topCandidates의 순서는 위에서 이미 확정됨 — 여기서는 표시 매핑만 셔플)
+        ShuffleCandidateKeyMapping();
     }
 }

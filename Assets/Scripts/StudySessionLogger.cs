@@ -44,14 +44,19 @@ public class StudySessionLogger : MonoBehaviour
     public List<TrialPlanEntry> trialPlan = new List<TrialPlanEntry>();
 
     [Header("Candidates")]
-    [Tooltip("trial당 기록할 후보 수 상한 (프로토콜: 3 = C1/C2/C3). CameraCandidateGenerator.topK도 3 권장.")]
-    public int candidatesPerTrial = 3;
+    [Tooltip("trial당 기록할 후보 수 상한 (키 1~5, 후보 C1~C5 기준). CameraCandidateGenerator.topK도 5 권장.")]
+    public int candidatesPerTrial = 5;
 
     // ── CSV headers (스펙 고정) ────────────────────────────────────────────────
     private const string TRIALS_HEADER =
         "participant_id,session_id,trial_index,prompt_id,target_effect_class,user_command,source_path,parsed_effect_class,intensity,confidence,view_preference,warning,timestamp,latency_s";
+    // ★ 기존 컬럼 순서는 유지하고 끝에 assigned_key만 추가. assigned_key = 이 순위 후보(C1~C5)가
+    //   이번 시행에서 몇 번 키(1~5)에 셔플 배정됐는지. candidate_id/total_score 등은 여전히 실제 순위 기준.
     private const string CANDIDATES_HEADER =
-        "participant_id,session_id,trial_index,prompt_id,target_effect_class,candidate_id,position_x,position_y,position_z,rotation_x,rotation_y,rotation_z,total_score,h_over_h,elevation_deg,tilt_deg,angle_score,scale_score,view_score,timestamp";
+        "participant_id,session_id,trial_index,prompt_id,target_effect_class,candidate_id,position_x,position_y,position_z,rotation_x,rotation_y,rotation_z,total_score,h_over_h,elevation_deg,tilt_deg,angle_score,scale_score,view_score,timestamp,assigned_key";
+    // 키 입력 로그(셔플된 표시 매핑으로 어떤 키가 어떤 순위 후보를 보여줬는지) 전용 CSV.
+    private const string KEYPRESSES_HEADER =
+        "participant_id,session_id,trial_index,prompt_id,key_pressed,shown_candidate_id,shown_rank,press_count,timestamp";
 
     // ── Session state ─────────────────────────────────────────────────────────
     private bool _sessionStarted;
@@ -60,6 +65,10 @@ public class StudySessionLogger : MonoBehaviour
     private StreamWriter _trialsWriter;
     private StreamWriter _candidatesWriter;
     private StreamWriter _rawWriter;
+    private StreamWriter _keyPressesWriter;
+
+    // 현재 시행의 누적 키 입력 횟수(같은 키 재입력 포함, 1부터 증가). 시행이 바뀌면 0으로 리셋.
+    private int _keyPressCount;
 
     // ── Current trial buffer ──────────────────────────────────────────────────
     // candidates.csv가 prompt_id/target_effect_class를 쓰기 위해 현재 trial 식별자만 보관.
@@ -99,6 +108,11 @@ public class StudySessionLogger : MonoBehaviour
                 _candidatesWriter = new StreamWriter(Path.Combine(_sessionFolder, "candidates.csv"), false, csvEnc);
                 _candidatesWriter.WriteLine(CANDIDATES_HEADER);
                 _candidatesWriter.Flush();
+
+                // 키 입력 로그도 후보 CSV 토글과 함께 생성.
+                _keyPressesWriter = new StreamWriter(Path.Combine(_sessionFolder, "key_presses.csv"), false, csvEnc);
+                _keyPressesWriter.WriteLine(KEYPRESSES_HEADER);
+                _keyPressesWriter.Flush();
             }
             if (saveRawJson)
             {
@@ -121,6 +135,9 @@ public class StudySessionLogger : MonoBehaviour
         _curTrialIndex = trialIndex;
         _curPromptId = promptId ?? "";
         _curTargetClass = targetEffectClass ?? "";
+
+        // 새 시행 시작 → 누적 키 입력 횟수 리셋. SetCurrentTrialAuto도 이 메서드를 거치므로 함께 처리된다.
+        _keyPressCount = 0;
     }
 
     // 편의 메서드: trialPlan(또는 기본값)에서 prompt_id/target을 채워 SetCurrentTrial 호출.
@@ -236,8 +253,15 @@ public class StudySessionLogger : MonoBehaviour
             var c = list[i];
             if (c == null) continue;
 
-            string candidateId = "C" + (i + 1).ToString(CultureInfo.InvariantCulture);   // C1/C2/C3
+            string candidateId = "C" + (i + 1).ToString(CultureInfo.InvariantCulture);   // C1~C5 (실제 순위 기준)
             Vector3 euler = c.rotation.eulerAngles;
+
+            // assigned_key: 이 순위 후보(index i)가 이번 시행에서 몇 번 키에 배정됐는지 역참조.
+            // 매핑 조회가 불가하면(-1) 빈 값으로 둔다.
+            int assignedKey = generator.GetKeyNumberForCandidateIndex(i);
+            string assignedKeyStr = assignedKey > 0
+                ? assignedKey.ToString(CultureInfo.InvariantCulture)
+                : "";
 
             string row = string.Join(",", new string[]
             {
@@ -248,11 +272,39 @@ public class StudySessionLogger : MonoBehaviour
                 F(euler.x), F(euler.y), F(euler.z),
                 F(c.totalScore), F(c.hOverH), F(c.elevationDeg), F(c.tiltDeg),
                 F(c.angleScore), F(c.scaleScore), F(c.viewScore),
-                Csv(Now())
+                Csv(Now()), assignedKeyStr
             });
             _candidatesWriter.WriteLine(row);
         }
         _candidatesWriter.Flush();
+    }
+
+    // 키 입력 1회를 key_presses.csv에 기록한다. ApplyCandidateByIndex가 후보를 표시할 때마다 호출.
+    //   keyPressed:        사용자가 실제로 누른 키 번호(1~5)
+    //   shownCandidateId:  표시된 후보 id("C"+rank)
+    //   shownRank:         표시된 후보의 실제 순위(top 몇 위)
+    // [검증 포인트] 같은 시행에서 키를 N번 누르면 N줄이 쌓이고 press_count가 1→N으로 증가한다.
+    //   같은 키를 재입력하면(셔플 매핑이 고정이므로) shown_candidate_id/shown_rank가 동일하게 기록된다.
+    public void LogKeyPress(int keyPressed, string shownCandidateId, int shownRank)
+    {
+        EnsureSession();
+        if (!saveCandidateCsv || _keyPressesWriter == null) return;
+
+        _keyPressCount++;   // 현재 시행 누적 입력 횟수(1부터). SetCurrentTrial에서 0으로 리셋됨.
+
+        string row = string.Join(",", new string[]
+        {
+            Csv(participantId), Csv(_sessionId),
+            _curTrialIndex.ToString(CultureInfo.InvariantCulture),
+            Csv(_curPromptId),
+            keyPressed.ToString(CultureInfo.InvariantCulture),
+            Csv(shownCandidateId ?? ""),
+            shownRank.ToString(CultureInfo.InvariantCulture),
+            _keyPressCount.ToString(CultureInfo.InvariantCulture),
+            Csv(Now())
+        });
+        _keyPressesWriter.WriteLine(row);
+        _keyPressesWriter.Flush();
     }
 
     // 후보별/trial 전체 평가는 프로토콜상 외부 설문/엑셀에서 수집한다(Unity 미저장).
@@ -342,6 +394,7 @@ public class StudySessionLogger : MonoBehaviour
     {
         CloseWriter(ref _trialsWriter);
         CloseWriter(ref _candidatesWriter);
+        CloseWriter(ref _keyPressesWriter);
         CloseWriter(ref _rawWriter);
         _sessionStarted = false;
     }

@@ -227,8 +227,8 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: e180e9c25e3cc444c941ac6c6bf63042, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::StudySessionLogger
-  participantId: 01
-  sessionName: pilot
+  participantId: 03
+  sessionName: a
   trialOrderName: A
   useTimestampedFolder: 1
   saveRawJson: 1
