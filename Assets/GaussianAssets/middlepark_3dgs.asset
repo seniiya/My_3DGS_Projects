@@ -1,0 +1,31 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 33b71fae31e6c7d438e8566dc713e666, type: 3}
+  m_Name: middlepark_3dgs
+  m_EditorClassIdentifier: GaussianSplatting::GaussianSplatting.Runtime.GaussianSplatAsset
+  m_FormatVersion: 20231020
+  m_SplatCount: 512150
+  m_BoundsMin: {x: -274.019, y: -240.88719, z: -246.71089}
+  m_BoundsMax: {x: 254.62965, y: 239.11281, z: 334.55963}
+  m_DataHash:
+    serializedVersion: 2
+    Hash: a4ac046b855fe4b8b633b5da8f4a9054
+  m_PosFormat: 2
+  m_ScaleFormat: 2
+  m_SHFormat: 3
+  m_ColorFormat: 2
+  m_PosData: {fileID: 4900000, guid: 04d6bfcc3a358004e8a3e6d49ec59018, type: 3}
+  m_ColorData: {fileID: 4900000, guid: a5808bc305caed64e99f0a290d1a1e63, type: 3}
+  m_OtherData: {fileID: 4900000, guid: 82f9dda9a0f7ca64baba587fe9d5eae7, type: 3}
+  m_SHData: {fileID: 4900000, guid: 1227916e50b40aa45a6791d2c8726ecc, type: 3}
+  m_ChunkData: {fileID: 4900000, guid: cde3c117b87f93c449575cd2b16bc842, type: 3}
+  m_Cameras: []

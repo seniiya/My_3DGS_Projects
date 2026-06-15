@@ -119,6 +119,12 @@ public class CameraCandidateGenerator : MonoBehaviour
     private string currentEffectClass = "Unknown";
     private string currentTargetAngle = "";
 
+    // 현재 profile의 "모든" angle range를 Unity tilt convention 기준으로 담는다.
+    // 비어 있으면 ComputeAngleScore가 기존 단일 targetTiltMin/targetTiltMax 폴백을 쓴다(동작 보존).
+    // 채워져 있으면(예: Tense의 eye_level + high_angle) 각 range를 OR로 합쳐 최댓값 scoring.
+    // ※ low_angle profile은 각 range도 abs 변환해서 담는다(아래 ApplyProfileAndGenerate 참고).
+    private List<(float min, float max, float priority)> _activeAngleRanges = new List<(float, float, float)>();
+
     [Header("Internal Sampling Ranges")]
     public float sampleElevationMin = -35f;
     public float sampleElevationMax = 80f;
@@ -635,6 +641,16 @@ public class CameraCandidateGenerator : MonoBehaviour
                 $"viewYawOffset={viewYawOffsetDeg:F1} localAzimuth={GetCandidateLocalAzimuth(best.position):F1} " +
                 $"angleScore={best.angleScore:F3} scaleScore={best.scaleScore:F3} viewScore={best.viewScore:F3}"
             );
+
+            // [검증 로그] top 후보들의 tiltDeg 분포 — Tense에서 eye_level군(tilt≈0)과 high_angle군(tilt≈30~40)이
+            //   실제로 함께 선택됐는지 한 줄로 확인. 단일 range profile은 한 군집으로만 모인다(정상).
+            var tsb = new System.Text.StringBuilder();
+            for (int ti = 0; ti < topCandidates.Count; ti++)
+            {
+                if (ti > 0) tsb.Append(", ");
+                tsb.Append($"c{ti + 1}(tilt={topCandidates[ti].tiltDeg:F1},a={topCandidates[ti].angleScore:F2})");
+            }
+            Debug.Log($"[PCCG] Top candidate tilts: [{tsb}]");
         }
 
         Debug.Log($"[PCCG][FilterStats] dirSamples={totalDirSamples}, distSamples={totalDistanceSamples}, rejectElev={rejectElevation}, rejectView={rejectViewPreference}, rejectCollision={rejectCollision}, rejectLOS={rejectLineOfSight}, rejectGround={rejectGround}, rejectCeiling={rejectCeiling}, rejectInside={rejectInsideSpace}, rejectScale={rejectScale}, rejectAngle={rejectAngle}, accepted={accepted}");
@@ -1594,9 +1610,26 @@ public class CameraCandidateGenerator : MonoBehaviour
 
     float ComputeAngleScore(float tiltDeg)
     {
-        float center = (targetTiltMin + targetTiltMax) * 0.5f;
-        float half   = Mathf.Max((targetTiltMax - targetTiltMin) * 0.5f, 0.1f);
-        return Mathf.Clamp01(1f - Mathf.Abs(tiltDeg - center) / half);
+        // 폴백: 활성 range가 없으면(birds-eye/ground-level 등) 기존 단일 targetTilt 방식 그대로 — 동작 보존.
+        if (_activeAngleRanges == null || _activeAngleRanges.Count == 0)
+        {
+            float center = (targetTiltMin + targetTiltMax) * 0.5f;
+            float half   = Mathf.Max((targetTiltMax - targetTiltMin) * 0.5f, 0.1f);
+            return Mathf.Clamp01(1f - Mathf.Abs(tiltDeg - center) / half);
+        }
+
+        // 다중 range(OR): 각 range를 "기존과 동일한 형태"로 점수화한 뒤 priority를 곱하고, 전체 최댓값을 반환.
+        //   priority는 여기서만 반영된다(바깥 totalScore의 anglePriority는 다중 range 모드에서 1.0으로 중립화됨).
+        //   단일 range면 최댓값 = 그 range 점수(×priority)라 기존과 동일하다.
+        float best = 0f;
+        foreach (var r in _activeAngleRanges)
+        {
+            float center = (r.min + r.max) * 0.5f;
+            float half   = Mathf.Max((r.max - r.min) * 0.5f, 0.1f);
+            float s = Mathf.Clamp01(1f - Mathf.Abs(tiltDeg - center) / half) * r.priority;
+            if (s > best) best = s;
+        }
+        return best;
     }
 
     float ComputeScaleScore(float hOverH)
@@ -2132,6 +2165,10 @@ public class CameraCandidateGenerator : MonoBehaviour
         targetTiltMin = elevationMin;
         targetTiltMax = elevationMax;
 
+        // 기본은 비움 → birds-eye/ground-level은 이 상태로 두어 단일 targetTilt 폴백을 쓴다(동작 불변).
+        // 일반(else) 경로에서만 아래에서 모든 range를 채운다.
+        _activeAngleRanges.Clear();
+
         if (isLowAngleProfile)
         {
             float a = Mathf.Abs(elevationMin);
@@ -2171,15 +2208,84 @@ public class CameraCandidateGenerator : MonoBehaviour
         }
         else
         {
-            sampleElevationMin = Mathf.Max(-45f, elevationMin - 25f);
-            sampleElevationMax = Mathf.Min(80f, elevationMax + 25f);
-            Debug.Log($"[PCCG] Profile angle target=[{targetTiltMin},{targetTiltMax}], samplingElev=[{sampleElevationMin},{sampleElevationMax}]");
+            // ── 다중 angle range 활성화 (Tense의 eye_level + high_angle 등을 모두 살림) ──
+            // low_angle convention: 위 isLowAngleProfile 블록이 targetTilt를 abs로 뒤집는 것과 "동일하게"
+            //   각 range의 min/max도 abs 변환해서 담는다(low_angle = 카메라가 아래에서 위를 봄 → +tilt).
+            // high_angle convention: 이 프로젝트 angle 표는 high_angle을 +30~40으로 정의한다.
+            //   ComputeCameraTiltDeg는 "카메라가 아래에서 위를 보면 +"(target이 카메라보다 위 → +) 이므로,
+            //   표의 +30~40을 부호 그대로 사용하면 ComputeCameraTiltDeg convention과 일치한다 → 여기서 뒤집지 않는다.
+            if (prof.angle_ranges != null)
+            {
+                foreach (var r in prof.angle_ranges)
+                {
+                    float rmin, rmax;
+                    if (isLowAngleProfile)
+                    {
+                        float a = Mathf.Abs(r.min_deg);
+                        float b = Mathf.Abs(r.max_deg);
+                        rmin = Mathf.Min(a, b);
+                        rmax = Mathf.Max(a, b);
+                    }
+                    else
+                    {
+                        rmin = r.min_deg;   // eye_level / high_angle 등은 부호 그대로
+                        rmax = r.max_deg;
+                    }
+                    _activeAngleRanges.Add((rmin, rmax, r.priority));
+                }
+            }
+
+            // [이중 적용 방지] priority는 이제 ComputeAngleScore "안에서" 각 range에 곱해진다.
+            //   기존엔 바깥 totalScore에서 angleScore * anglePriority 로 한 번 곱했으므로,
+            //   다중 range 모드에서는 바깥 anglePriority를 1.0으로 중립화하여 priority가 한 곳에서만 반영되게 한다.
+            //   (단일 range 검증: 내부 rawScore*priority × 바깥 1.0 == 기존 rawScore × 바깥 priority.
+            //    모든 단일 range profile의 priority가 1.0이므로 결과는 byte-identical.)
+            if (_activeAngleRanges.Count > 0)
+                anglePriority = 1.0f;
+
+            // sampling elevation: 모든 range의 "원본 부호(min_deg/max_deg)" 전체 최소~최대를 ±25 마진으로 커버.
+            //   ※ 샘플링은 world elevation(부호 있음) 기준이므로 abs가 아닌 원본 부호 union을 쓴다.
+            //     - 단일 range: union==primary == 기존 elevationMin/Max → 기존과 동일(Relaxed 등 불변).
+            //     - Tense: union=[-12,40] → eye_level과 high_angle을 모두 포함.
+            float sigMin = elevationMin, sigMax = elevationMax;
+            if (prof.angle_ranges != null && prof.angle_ranges.Count > 0)
+            {
+                sigMin = float.PositiveInfinity;
+                sigMax = float.NegativeInfinity;
+                foreach (var r in prof.angle_ranges)
+                {
+                    if (r.min_deg < sigMin) sigMin = r.min_deg;
+                    if (r.max_deg > sigMax) sigMax = r.max_deg;
+                }
+            }
+            sampleElevationMin = Mathf.Max(-45f, sigMin - 25f);
+            sampleElevationMax = Mathf.Min(80f, sigMax + 25f);
+            Debug.Log($"[PCCG] Profile angle target=[{targetTiltMin},{targetTiltMax}], samplingElev=[{sampleElevationMin},{sampleElevationMax}] (ranges={_activeAngleRanges.Count}, anglePriority={anglePriority:F2})");
         }
 
         Debug.Log($"[PCCG] Profile applied: {output.effect_class} " +
                   $"elev=[{elevationMin},{elevationMax}] " +
                   $"h/H=[{hOverH_min:F3},{hOverH_max:F3}] " +
                   $"lookTargetMode={lookTargetMode}");
+
+        // [검증 로그] 현재 활성화된 angle range들(Unity tilt convention 적용 후). 비어 있으면 단일 폴백.
+        //   Tense 예시: "Active angle ranges (2): [(-12.0,12.0,p1.00), (30.0,40.0,p0.80)]"
+        //   birds-eye/ground-level: "Active angle ranges (0): [] (single-range fallback: targetTilt=[..])"
+        if (_activeAngleRanges.Count > 0)
+        {
+            var arsb = new System.Text.StringBuilder();
+            for (int ri = 0; ri < _activeAngleRanges.Count; ri++)
+            {
+                if (ri > 0) arsb.Append(", ");
+                var r = _activeAngleRanges[ri];
+                arsb.Append($"({r.min:F1},{r.max:F1},p{r.priority:F2})");
+            }
+            Debug.Log($"[PCCG] Active angle ranges ({_activeAngleRanges.Count}): [{arsb}]");
+        }
+        else
+        {
+            Debug.Log($"[PCCG] Active angle ranges (0): [] (single-range fallback: targetTilt=[{targetTiltMin:F1},{targetTiltMax:F1}])");
+        }
 
         // FOV가 h/H 계산에 영향을 주므로 후보 생성 전에 먼저 적용
         Debug.Log(
