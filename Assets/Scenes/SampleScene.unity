@@ -388,6 +388,65 @@ CanvasRenderer:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 157249729}
   m_CullTransparentMesh: 1
+--- !u!1 &274133154
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 274133156}
+  - component: {fileID: 274133155}
+  m_Layer: 0
+  m_Name: 'middlepark_3dgs '
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 0
+--- !u!114 &274133155
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 274133154}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: c12d929a7f62c48adbe9ff45c9a33ff0, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: GaussianSplatting::GaussianSplatting.Runtime.GaussianSplatRenderer
+  m_Asset: {fileID: 11400000, guid: 31856635176b2ae4884c90c6a571ffb9, type: 2}
+  m_RenderOrder: 0
+  m_SplatScale: 1
+  m_OpacityScale: 1
+  m_SHOrder: 3
+  m_SHOnly: 0
+  m_SortNthFrame: 1
+  m_RenderMode: 0
+  m_PointDisplaySize: 3
+  m_Cutouts: []
+  m_ShaderSplats: {fileID: 4800000, guid: ed800126ae8844a67aad1974ddddd59c, type: 3}
+  m_ShaderComposite: {fileID: 4800000, guid: 7e184af7d01193a408eb916d8acafff9, type: 3}
+  m_ShaderDebugPoints: {fileID: 4800000, guid: b44409fc67214394f8f47e4e2648425e, type: 3}
+  m_ShaderDebugBoxes: {fileID: 4800000, guid: 4006f2680fd7c8b4cbcb881454c782be, type: 3}
+  m_CSSplatUtilities: {fileID: 7200000, guid: ec84f78b836bd4f96a105d6b804f08bd, type: 3}
+--- !u!4 &274133156
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 274133154}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: -6.41834, y: 28.03743, z: -8.86916}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 0}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!1 &307014762
 GameObject:
   m_ObjectHideFlags: 0
@@ -2524,6 +2583,67 @@ CanvasRenderer:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 1235951754}
   m_CullTransparentMesh: 1
+--- !u!1001 &1236283972
+PrefabInstance:
+  m_ObjectHideFlags: 0
+  serializedVersion: 2
+  m_Modification:
+    serializedVersion: 3
+    m_TransformParent: {fileID: 0}
+    m_Modifications:
+    - target: {fileID: -8679921383154817045, guid: 055f318f0a7b710429eb250ff441cf24, type: 3}
+      propertyPath: m_LocalPosition.x
+      value: 1.4496955
+      objectReference: {fileID: 0}
+    - target: {fileID: -8679921383154817045, guid: 055f318f0a7b710429eb250ff441cf24, type: 3}
+      propertyPath: m_LocalPosition.y
+      value: 25.5532
+      objectReference: {fileID: 0}
+    - target: {fileID: -8679921383154817045, guid: 055f318f0a7b710429eb250ff441cf24, type: 3}
+      propertyPath: m_LocalPosition.z
+      value: -9.594453
+      objectReference: {fileID: 0}
+    - target: {fileID: -8679921383154817045, guid: 055f318f0a7b710429eb250ff441cf24, type: 3}
+      propertyPath: m_LocalRotation.w
+      value: 1
+      objectReference: {fileID: 0}
+    - target: {fileID: -8679921383154817045, guid: 055f318f0a7b710429eb250ff441cf24, type: 3}
+      propertyPath: m_LocalRotation.x
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: -8679921383154817045, guid: 055f318f0a7b710429eb250ff441cf24, type: 3}
+      propertyPath: m_LocalRotation.y
+      value: -0
+      objectReference: {fileID: 0}
+    - target: {fileID: -8679921383154817045, guid: 055f318f0a7b710429eb250ff441cf24, type: 3}
+      propertyPath: m_LocalRotation.z
+      value: -0
+      objectReference: {fileID: 0}
+    - target: {fileID: -8679921383154817045, guid: 055f318f0a7b710429eb250ff441cf24, type: 3}
+      propertyPath: m_LocalEulerAnglesHint.x
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: -8679921383154817045, guid: 055f318f0a7b710429eb250ff441cf24, type: 3}
+      propertyPath: m_LocalEulerAnglesHint.y
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: -8679921383154817045, guid: 055f318f0a7b710429eb250ff441cf24, type: 3}
+      propertyPath: m_LocalEulerAnglesHint.z
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 919132149155446097, guid: 055f318f0a7b710429eb250ff441cf24, type: 3}
+      propertyPath: m_Name
+      value: middlepark_mesh
+      objectReference: {fileID: 0}
+    - target: {fileID: 919132149155446097, guid: 055f318f0a7b710429eb250ff441cf24, type: 3}
+      propertyPath: m_IsActive
+      value: 0
+      objectReference: {fileID: 0}
+    m_RemovedComponents: []
+    m_RemovedGameObjects: []
+    m_AddedGameObjects: []
+    m_AddedComponents: []
+  m_SourcePrefab: {fileID: 100100000, guid: 055f318f0a7b710429eb250ff441cf24, type: 3}
 --- !u!1 &1281157676 stripped
 GameObject:
   m_CorrespondingSourceObject: {fileID: 3736914423787820656, guid: ebc4580c7ed532b4cb07171aed640d52, type: 3}
@@ -3109,6 +3229,7 @@ MonoBehaviour:
   topCandidates: []
   enableNumberKeyCandidatePreview: 1
   currentPreviewCandidateIndex: -1
+  studyLogger: {fileID: 0}
   followAnimatedTarget: 1
   trajectoryCandidates: []
   closeUpFOV: 20
@@ -3508,3 +3629,5 @@ SceneRoots:
   - {fileID: 1339557929}
   - {fileID: 723911139}
   - {fileID: 150701178}
+  - {fileID: 1236283972}
+  - {fileID: 274133156}

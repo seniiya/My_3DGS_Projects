@@ -240,6 +240,9 @@ public class CameraCandidateGenerator : MonoBehaviour
         // >0이면 이 후보를 카메라에 적용할 때 강제할 FOV(도). 0=미설정(일반 후보) → 기존 FOV 로직 사용.
         // high_angle 직접 배치 후보(BuildOverheadCandidate)만 이 값을 채운다.
         public float fovForCandidate;
+        // true면 "각도 우선, shot size(long shot) 양보"로 만들어진 high_angle fallback 후보.
+        // 로깅/분석용 표시 플래그일 뿐 동작에는 영향 없음(일반 후보는 false).
+        public bool shotSizeRelaxed;
     }
 
     [System.Serializable]
@@ -1985,6 +1988,9 @@ public class CameraCandidateGenerator : MonoBehaviour
 
     // high_angle 전용: birds-eye와 동일한 "천장 측정 → 거리 역산 → 직접 배치" 메커니즘으로
     // 천장 아래 가능한 높이에서 목표 부감각 θ(도)의 카메라 후보 1개를 만든다.
+    // ★ 철학: birds-eye(PlaceBirdsEyeCamera)가 shot size를 무시하고 천장 아래 직접 배치하듯,
+    //   high angle도 "각도 우선, shot size(long shot h/H) 양보"를 일관되게 적용한다.
+    // ※ 공간 독립적: 모든 높이·거리는 런타임 실측 ceilingY / lookTargetPoint에서만 유도한다(공간 치수 하드코딩 없음).
     // ※ birds-eye와 달리 topCandidates를 비우지 않는다 — 호출부가 eye_level 결과에 "추가"만 한다.
     // 배치 불가(천장 없음 / 천장 여유 부족 / 충돌·가시성·내부 검사 실패)면 null 반환.
     private CameraCandidate BuildOverheadCandidate(float targetThetaDeg)
@@ -2031,9 +2037,10 @@ public class CameraCandidateGenerator : MonoBehaviour
 
         LayerMask combinedLayer = environmentLayer | characterLayer;
         float subjectHeightM = GetReferenceSubjectHeight();
-        float targetHOverH = (hOverH_min + hOverH_max) * 0.5f;   // 프로파일 h/H 중앙값
+        // ※ shot size(h/H) 목표를 두지 않는다 — 각도 우선, shot size는 결과적으로 결정.
 
         // 목표 θ에서 D 역산 → 충돌/가시성/내부 검사. 실패하면 θ를 2도씩 낮춰 26도까지 재시도.
+        // (공간이 낮을수록 천장 hMax가 작아 확보 가능한 θ가 작아진다 = 공간 독립적 fallback.)
         for (float theta = targetThetaDeg; theta >= 26f; theta -= 2f)
         {
             float tanT = Mathf.Tan(theta * Mathf.Deg2Rad);
@@ -2045,15 +2052,31 @@ public class CameraCandidateGenerator : MonoBehaviour
             if (!HasLineOfSight(pos, lookTargetPoint)) continue;
             if (!IsInsideSpaceByRaycast(pos)) continue;
 
-            // ── 배치 성공: scoring은 일반 후보와 "동일 공식"(특혜 점수 금지) ──
+            // ── 배치 성공 ──
             Quaternion lookRot = Quaternion.LookRotation(lookTargetPoint - pos, Vector3.up);
             float geomTilt = ComputeCameraTiltDeg(pos, lookTargetPoint);   // 부감 → 음수(≈ -θ)
             // high_angle range는 이 프로젝트 표에서 +30~40(부감 "크기")로 정의되므로,
             // scoring/기록 tilt는 그 부호 규약에 맞춰 양수 크기(|geomTilt|≈θ)를 사용한다.
             float tiltForScore = Mathf.Abs(geomTilt);
+            float dActual = Vector3.Distance(pos, lookTargetPoint);
 
+            // FOV: shot size(long shot h/H)를 강제하지 않는다. birds-eye와 동일하게 광각(birdsEyeFOV)을
+            //   재사용해 그 위치에서 인물이 프레임에 담기게만 한다(long shot h/H 역산 강제 없음).
+            float fovForCandidate = birdsEyeFOV;
+
+            // 결과적으로 결정된 shot size(h/H) — 기록/로깅용일 뿐, 목표로 삼지 않는다.
+            float halfFovTan = Mathf.Tan(fovForCandidate * 0.5f * Mathf.Deg2Rad);
+            float resultingHOverH = (dActual > 0.001f && halfFovTan > 0.0001f)
+                ? subjectHeightM / (2f * dActual * halfFovTan)
+                : 0f;
+
+            // ── scoring: 이 fallback 후보에만 적용되는 "각도 우선, shot size 양보" 규칙 ──
+            // ※ 일반(샘플링) 후보의 scoring(GenerateCandidates)은 절대 바꾸지 않는다 — 여기에만 적용.
+            // shot size를 양보했으므로 scaleScore는 long shot 일치도를 따지지 않고 "중립값 1.0"으로 둔다
+            //   (long shot 기준으로 낮게 나와 후보가 탈락하거나 점수가 비정상적으로 낮아지는 것을 방지).
+            // 마찬가지로 h/H 기반 intensity bias도 적용하지 않는다(중립). 즉 점수는 angle(과 view) 위주로 결정.
             float angleScore = ComputeAngleScore(tiltForScore);
-            float scaleScore = ComputeScaleScore(targetHOverH);           // 목표 h/H 기준
+            float scaleScore = 1.0f;                       // 중립(shot size 양보) — 일반 후보엔 미적용
             float viewScore  = ComputeViewPreferenceScore(pos);
 
             bool hasViewPreference =
@@ -2065,20 +2088,15 @@ public class CameraCandidateGenerator : MonoBehaviour
                 totalScore = angleScore * anglePriority * 0.30f + scaleScore * 0.30f + viewScore * 0.40f;
             else
                 totalScore = angleScore * anglePriority * 0.50f + scaleScore * 0.50f;
-            totalScore *= ComputeIntensityScaleBias(targetHOverH);
-
-            // shot size 보정: 이 D에서 targetHOverH가 나오도록 FOV 역산(10~90도 clamp).
-            float dActual = Vector3.Distance(pos, lookTargetPoint);
-            float fovForCandidate = 0f;
-            if (dActual > 0.001f && targetHOverH > 0.001f)
-            {
-                float fovRad = 2f * Mathf.Atan(subjectHeightM / (2f * dActual * targetHOverH));
-                fovForCandidate = Mathf.Clamp(fovRad * Mathf.Rad2Deg, 10f, 90f);
-            }
+            // h/H 기반 intensity bias는 곱하지 않음(shot size 양보 → 중립). 일반 후보 경로는 그대로 적용됨.
 
             float elevDeg = Mathf.Asin(Mathf.Clamp((pos - pivotPoint).normalized.y, -1f, 1f)) * Mathf.Rad2Deg;
 
-            Debug.Log($"[PCCG] forced high_angle added: theta={theta:F0}, D={dActual:F2}, h={hMax:F2}, FOV={fovForCandidate:F1}, tilt={tiltForScore:F1}");
+            Debug.Log(
+                $"[PCCG] high_angle fallback (shot-size relaxed): theta={theta:F0}, D={dActual:F2}, " +
+                $"h={hMax:F2}, FOV={fovForCandidate:F1}, resultH/H={resultingHOverH:F3}, tilt={tiltForScore:F1}, " +
+                $"note=long-shot constraint dropped due to ceiling clearance"
+            );
 
             return new CameraCandidate
             {
@@ -2086,12 +2104,13 @@ public class CameraCandidateGenerator : MonoBehaviour
                 rotation        = lookRot,
                 totalScore      = totalScore,
                 elevationDeg    = elevDeg,
-                hOverH          = targetHOverH,
+                hOverH          = resultingHOverH,
                 angleScore      = angleScore,
                 scaleScore      = scaleScore,
                 viewScore       = viewScore,
                 tiltDeg         = tiltForScore,
-                fovForCandidate = fovForCandidate
+                fovForCandidate = fovForCandidate,
+                shotSizeRelaxed = true
             };
         }
 
@@ -2536,6 +2555,9 @@ public class CameraCandidateGenerator : MonoBehaviour
             prof.angle_ranges != null && prof.angle_ranges.Exists(r => r.min_deg >= 25f))
         {
             // 중복 방지 가드: 이미 샘플링 결과(topCandidates)에 충분한 high(|tilt|>=25) 후보가 있으면 직접 배치 생략.
+            // ※ 천장이 충분히 높은 공간에서는 샘플링이 정상적으로 high angle long shot 후보를 생성하므로
+            //   sampledHigh>=2가 되어 이 "shot size 양보" fallback(BuildOverheadCandidate)은 호출되지 않는다.
+            //   즉 양보는 오직 천장이 낮아 high angle long shot이 물리적으로 불가능한 공간에서만 일어난다.
             int sampledHigh = 0;
             foreach (var c in topCandidates)
                 if (c != null && Mathf.Abs(c.tiltDeg) >= 25f) sampledHigh++;
