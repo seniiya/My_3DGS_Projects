@@ -409,23 +409,31 @@ public class CameraCandidateGenerator : MonoBehaviour
         {
             float highestCeiling = float.MinValue;
             int ceilingHitCount = 0;
-            float[] probeOffsets = { 0f, 1.5f, -1.5f };
+            // [천장 측정 수정] RaycastAll로 모든 면을 통과해 본 hit 중 가장 높은 Y를 천장으로 사용.
+            //   단면 mesh 안쪽 면도 잡도록 측정 구간에서만 queriesHitBackfaces를 켰다가 복구한다.
+            float[] probeOffsets = { 0f, 1f, -1f, 2f, -2f };
+            bool prevHitBackfaces = Physics.queriesHitBackfaces;
+            Physics.queriesHitBackfaces = true;
             foreach (float ox in probeOffsets)
             {
                 foreach (float oz in probeOffsets)
                 {
-                    Vector3 origin = pivotPoint + new Vector3(ox, 0.1f, oz);
-                    if (Physics.Raycast(origin, Vector3.up, out RaycastHit ch, 20f, environmentLayer))
+                    Vector3 origin = pivotPoint + new Vector3(ox, 0.05f, oz);
+                    RaycastHit[] hits = Physics.RaycastAll(origin, Vector3.up, 20f, environmentLayer);
+                    foreach (RaycastHit ch in hits)
                     {
+                        // origin보다 위에 있는 hit만 천장 후보로 인정(자기 자신/바닥 면 오인 방지).
+                        if (ch.point.y <= origin.y) continue;
                         ceilingHitCount++;
                         if (ch.point.y > highestCeiling) highestCeiling = ch.point.y;
                     }
                 }
             }
+            Physics.queriesHitBackfaces = prevHitBackfaces;
             if (ceilingHitCount > 0)
             {
                 ceilingY = highestCeiling - 0.3f;
-                Debug.Log($"[PCCG] Ceiling: highest hit among {ceilingHitCount} probes, ceilingY={ceilingY:F2}m");
+                Debug.Log($"[PCCG] Ceiling (RaycastAll): highestCeiling={highestCeiling:F2}, hitCount={ceilingHitCount}, ceilingY={ceilingY:F2}m");
             }
             else
             {
@@ -640,6 +648,7 @@ public class CameraCandidateGenerator : MonoBehaviour
 
         if (validCandidates.Count == 0)
         {
+            // [수정] 후보 0개는 물리적 제약 문제이지 fatal error가 아님 → Error Pause 방지를 위해 Warning.
             Debug.LogWarning("[PCCG] No valid placement candidates. Check FilterStats.");
         }
 
@@ -1810,19 +1819,42 @@ public class CameraCandidateGenerator : MonoBehaviour
         return traj;
     }
 
+    // [수정] close-rejection 디버그용: 생성(프레임)당 1회만 찍어 summary 수준 유지(스팸 방지).
+    private int _lastTooCloseLogFrame = -1;
+
     bool IsTrajectoryAcceptable(CameraTrajectory traj)
     {
         if (traj == null || traj.positions.Count == 0) return false;
         if (rejectCollidingTrajectory && traj.collisionPenalty > 0f) return false;
         if (traj.visibilityPenalty > 0.25f) return false;
         if (traj.outsideSpacePenalty > 0f) return false;
-        if (PassesTooCloseToCharacter(traj)) return false;
+        if (PassesTooCloseToCharacter(traj))
+        {
+            if (_lastTooCloseLogFrame != Time.frameCount)
+            {
+                _lastTooCloseLogFrame = Time.frameCount;
+                Debug.LogWarning($"[PCCG] Trajectory rejected: too close to character " +
+                                 $"(effRadius={GetEffectiveTrajectoryAvoidRadius():F2}m, h/H_min={hOverH_min:F2}).");
+            }
+            return false;
+        }
         return true;
+    }
+
+    // [수정] medium/close-up(h/H_min>=0.24)은 카메라가 가까워야 정상 → trajectory clearance만 완화.
+    //   placement/collision/LOS/scoring은 변경하지 않는다. wide/long/ground-level은 기존 반경 유지.
+    float GetEffectiveTrajectoryAvoidRadius()
+    {
+        if (hOverH_min >= 0.24f)
+            return Mathf.Max(COLLISION_RADIUS * 1.5f, 0.25f);
+
+        return characterAvoidRadius;
     }
 
     bool PassesTooCloseToCharacter(CameraTrajectory traj)
     {
         Vector3 characterCenter = GetPivotPoint();
+        // [수정] 고정 characterAvoidRadius 대신 shot scale에 따른 effective radius 사용.
         float effectiveAvoidRadius = GetEffectiveTrajectoryAvoidRadius();
 
         foreach (Vector3 pos in traj.positions)
@@ -1835,16 +1867,6 @@ public class CameraCandidateGenerator : MonoBehaviour
         }
 
         return false;
-    }
-
-    float GetEffectiveTrajectoryAvoidRadius()
-    {
-        // Medium / close-up profiles require camera paths closer to the character.
-        // This changes only the trajectory clearance margin; placement scoring remains profile-constrained.
-        if (hOverH_min >= 0.24f)
-            return Mathf.Max(COLLISION_RADIUS * 1.5f, 0.25f);
-
-        return characterAvoidRadius;
     }
 
     CameraTrajectory BuildAvoidanceSplineTrajectory(
@@ -1967,20 +1989,27 @@ public class CameraCandidateGenerator : MonoBehaviour
         Vector3 pivotPoint = GetPivotPoint();
         Vector3 lookTargetPoint = GetLookTargetPoint();
 
-        // 천장 높이 측정 (9-probe 중 최고값)
+        // 천장 높이 측정 [RaycastAll 수정]: 모든 면 통과 hit 중 가장 높은 Y를 천장으로.
+        //   단면 mesh 안쪽 면도 잡도록 측정 구간에서만 queriesHitBackfaces를 켰다가 복구.
         float highestCeiling = float.MinValue;
         int hitCount = 0;
-        float[] probeOffsets = { 0f, 1.5f, -1.5f };
+        float[] probeOffsets = { 0f, 1f, -1f, 2f, -2f };
+        bool prevHitBackfaces = Physics.queriesHitBackfaces;
+        Physics.queriesHitBackfaces = true;
         foreach (float ox in probeOffsets)
             foreach (float oz in probeOffsets)
             {
-                Vector3 origin = pivotPoint + new Vector3(ox, 0.1f, oz);
-                if (Physics.Raycast(origin, Vector3.up, out RaycastHit ch, 20f, environmentLayer))
+                Vector3 origin = pivotPoint + new Vector3(ox, 0.05f, oz);
+                RaycastHit[] hits = Physics.RaycastAll(origin, Vector3.up, 20f, environmentLayer);
+                foreach (RaycastHit ch in hits)
                 {
+                    if (ch.point.y <= origin.y) continue;   // origin보다 위 hit만 인정
                     hitCount++;
                     if (ch.point.y > highestCeiling) highestCeiling = ch.point.y;
                 }
             }
+        Physics.queriesHitBackfaces = prevHitBackfaces;
+        Debug.Log($"[PCCG] Ceiling (RaycastAll): highestCeiling={highestCeiling:F2}, hitCount={hitCount}");
 
         float camY;
         if (hitCount > 0)
@@ -2030,20 +2059,27 @@ public class CameraCandidateGenerator : MonoBehaviour
         Vector3 pivotPoint = GetPivotPoint();
         Vector3 lookTargetPoint = GetLookTargetPoint();
 
-        // ── 천장 높이 측정: birds-eye와 동일한 9-probe 상향 raycast (offsets {0,1.5,-1.5}, 20m) ──
+        // ── 천장 높이 측정 [RaycastAll 수정]: 모든 면 통과 hit 중 가장 높은 Y를 천장으로 ──
+        //   단면 mesh 안쪽 면도 잡도록 측정 구간에서만 queriesHitBackfaces를 켰다가 복구.
         float highestCeiling = float.MinValue;
         int hitCount = 0;
-        float[] probeOffsets = { 0f, 1.5f, -1.5f };
+        float[] probeOffsets = { 0f, 1f, -1f, 2f, -2f };
+        bool prevHitBackfaces = Physics.queriesHitBackfaces;
+        Physics.queriesHitBackfaces = true;
         foreach (float ox in probeOffsets)
             foreach (float oz in probeOffsets)
             {
-                Vector3 origin = pivotPoint + new Vector3(ox, 0.1f, oz);
-                if (Physics.Raycast(origin, Vector3.up, out RaycastHit ch, 20f, environmentLayer))
+                Vector3 origin = pivotPoint + new Vector3(ox, 0.05f, oz);
+                RaycastHit[] hits = Physics.RaycastAll(origin, Vector3.up, 20f, environmentLayer);
+                foreach (RaycastHit ch in hits)
                 {
+                    if (ch.point.y <= origin.y) continue;   // origin보다 위 hit만 인정
                     hitCount++;
                     if (ch.point.y > highestCeiling) highestCeiling = ch.point.y;
                 }
             }
+        Physics.queriesHitBackfaces = prevHitBackfaces;
+        Debug.Log($"[PCCG] Ceiling (RaycastAll): highestCeiling={highestCeiling:F2}, hitCount={hitCount}");
         if (hitCount == 0)
         {
             Debug.Log("[PCCG] BuildOverheadCandidate: no ceiling detected → null.");
@@ -2145,126 +2181,6 @@ public class CameraCandidateGenerator : MonoBehaviour
 
         Debug.Log($"[PCCG] BuildOverheadCandidate(theta={targetThetaDeg:F0}): all retries rejected (collision/LOS/inside) → null.");
         return null;
-    }
-
-    private CameraCandidate BuildRuntimeFailSafeCandidate()
-    {
-        if (previewCamera == null || characterRoot == null)
-            return null;
-
-        Vector3 lookTargetPoint = GetLookTargetPoint();
-
-        float camY;
-        if (isGroundLevelProfile)
-        {
-            float groundY = GetGroundReferenceY();
-            camY = groundY + Mathf.Clamp(
-                (sampleCameraHeightMin + sampleCameraHeightMax) * 0.5f,
-                sampleCameraHeightMin,
-                sampleCameraHeightMax
-            );
-        }
-        else
-        {
-            camY = previewCamera.transform.position.y;
-        }
-
-        float subjectHeightM = GetReferenceSubjectHeight();
-        float fov = previewCamera.fieldOfView;
-        float tanHalfFov = Mathf.Tan(fov * 0.5f * Mathf.Deg2Rad);
-        float targetHOverH = Mathf.Max((hOverH_min + hOverH_max) * 0.5f, 0.001f);
-
-        float profileD = subjectHeightM / (2f * tanHalfFov * targetHOverH);
-        float verticalDelta = Mathf.Abs(lookTargetPoint.y - camY);
-
-        float maxTiltForFallback = Mathf.Max(targetTiltMax, 35f);
-        float minDForTilt = verticalDelta / Mathf.Max(Mathf.Sin(maxTiltForFallback * Mathf.Deg2Rad), 0.001f);
-
-        float D = Mathf.Max(profileD, minDForTilt + 0.05f);
-        float horizontalD = Mathf.Sqrt(Mathf.Max(0.15f * 0.15f, D * D - verticalDelta * verticalDelta));
-
-        Vector3[] directions =
-        {
-            characterRoot.forward,
-            -characterRoot.forward,
-            characterRoot.right,
-            -characterRoot.right,
-            (characterRoot.forward + characterRoot.right).normalized,
-            (characterRoot.forward - characterRoot.right).normalized,
-            (-characterRoot.forward + characterRoot.right).normalized,
-            (-characterRoot.forward - characterRoot.right).normalized
-        };
-
-        LayerMask combinedLayer = environmentLayer | characterLayer;
-
-        foreach (Vector3 rawDir in directions)
-        {
-            Vector3 dir = rawDir;
-            dir.y = 0f;
-            if (dir.sqrMagnitude < 0.0001f)
-                continue;
-            dir.Normalize();
-
-            Vector3 pos = new Vector3(
-                lookTargetPoint.x,
-                camY,
-                lookTargetPoint.z
-            ) + dir * horizontalD;
-
-            if (Physics.CheckSphere(pos, COLLISION_RADIUS, combinedLayer))
-                continue;
-
-            if (!HasLineOfSight(pos, lookTargetPoint))
-                continue;
-
-            if (!IsInsideSpaceByRaycast(pos))
-                continue;
-
-            Quaternion rot = Quaternion.LookRotation(lookTargetPoint - pos, Vector3.up);
-            float actualDist = Vector3.Distance(pos, lookTargetPoint);
-            float actualHOverH = subjectHeightM / (2f * actualDist * tanHalfFov);
-            float tiltDeg = ComputeCameraTiltDeg(pos, lookTargetPoint);
-            float angleScore = ComputeAngleScore(tiltDeg);
-            float scaleScore = ComputeScaleScore(actualHOverH);
-            float viewScore = ComputeViewPreferenceScore(pos);
-
-            float totalScore = Mathf.Max(
-                0.01f,
-                angleScore * 0.50f + scaleScore * 0.50f
-            );
-
-            return new CameraCandidate
-            {
-                position = pos,
-                rotation = rot,
-                totalScore = totalScore,
-                elevationDeg = Mathf.Asin(Mathf.Clamp((pos - GetPivotPoint()).normalized.y, -1f, 1f)) * Mathf.Rad2Deg,
-                hOverH = actualHOverH,
-                angleScore = angleScore,
-                scaleScore = scaleScore,
-                viewScore = viewScore,
-                tiltDeg = tiltDeg
-            };
-        }
-
-        Vector3 fallbackPos = previewCamera.transform.position;
-        Quaternion fallbackRot = Quaternion.LookRotation(lookTargetPoint - fallbackPos, Vector3.up);
-        float fallbackDist = Vector3.Distance(fallbackPos, lookTargetPoint);
-        float fallbackHOverH = subjectHeightM / (2f * Mathf.Max(fallbackDist, 0.001f) * tanHalfFov);
-        float fallbackTilt = ComputeCameraTiltDeg(fallbackPos, lookTargetPoint);
-
-        return new CameraCandidate
-        {
-            position = fallbackPos,
-            rotation = fallbackRot,
-            totalScore = 0.01f,
-            elevationDeg = Mathf.Asin(Mathf.Clamp((fallbackPos - GetPivotPoint()).normalized.y, -1f, 1f)) * Mathf.Rad2Deg,
-            hOverH = fallbackHOverH,
-            angleScore = ComputeAngleScore(fallbackTilt),
-            scaleScore = ComputeScaleScore(fallbackHOverH),
-            viewScore = ComputeViewPreferenceScore(fallbackPos),
-            tiltDeg = fallbackTilt
-        };
     }
 
     // Bird's-eye profile: trajectory 없이 best static placement만 적용
@@ -2615,34 +2531,19 @@ public class CameraCandidateGenerator : MonoBehaviour
             $"scaleRange=[{hOverH_min:F3},{hOverH_max:F3}], tiltRange=[{targetTiltMin:F1},{targetTiltMax:F1}]"
         );
         ApplyCameraFOV();
-        GenerateCandidates();
 
-        if (isGroundLevelProfile && topCandidates.Count == 0)
+        // [수정] bird's-eye는 sampling elev=[65,89]/tilt=[-90,-75]라 일반 GenerateCandidates()가
+        //   0 candidates(LogError) → Error Pause를 유발한다. 일반 샘플링을 건너뛰고 direct placement만 수행.
+        //   topCandidates 1개가 정상이며 trajectory는 생성하지 않는다.
+        if (isBirdsEyeProfile)
         {
-            float oldSampleElevationMin = sampleElevationMin;
-            float oldSampleElevationMax = sampleElevationMax;
-            int oldSampleCount = sampleCount;
-
-            Debug.LogWarning(
-                "[PCCG] Ground-level fallback retry: widened sampling elevation only. " +
-                "Profile h/H, tilt scoring, and ground-height constraint unchanged."
-            );
-
-            sampleElevationMin = Mathf.Min(sampleElevationMin, -70f);
-            sampleElevationMax = Mathf.Min(sampleElevationMax, 10f);
-            sampleCount = Mathf.Max(sampleCount, 1000);
-
-            try
-            {
-                GenerateCandidates();
-            }
-            finally
-            {
-                sampleElevationMin = oldSampleElevationMin;
-                sampleElevationMax = oldSampleElevationMax;
-                sampleCount = oldSampleCount;
-            }
+            Debug.Log("[PCCG] Bird's-eye profile detected: using direct overhead placement only.");
+            PlaceBirdsEyeCamera();
+            ShuffleCandidateKeyMapping();
+            return;
         }
+
+        GenerateCandidates();
 
         bool isRelaxedProfile =
             output != null &&
@@ -2775,25 +2676,6 @@ public class CameraCandidateGenerator : MonoBehaviour
                     }
                     Debug.Log($"[PCCG] Top candidate tilts (post high_angle merge): [{tsb}]");
                 }
-            }
-        }
-
-        if (!isBirdsEyeProfile && topCandidates.Count == 0)
-        {
-            Debug.LogWarning(
-                "[PCCG] No profile-feasible candidates after all retries. " +
-                "Creating one runtime fail-safe candidate to keep the experiment running. " +
-                "Profile p is not modified."
-            );
-
-            CameraCandidate fallback = BuildRuntimeFailSafeCandidate();
-            if (fallback != null)
-            {
-                topCandidates.Add(fallback);
-                Debug.LogWarning(
-                    $"[PCCG] Runtime fail-safe candidate added: pos={fallback.position}, " +
-                    $"tilt={fallback.tiltDeg:F1}, h/H={fallback.hOverH:F3}, score={fallback.totalScore:F3}"
-                );
             }
         }
 
