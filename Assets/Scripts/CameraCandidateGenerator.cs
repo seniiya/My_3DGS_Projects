@@ -640,7 +640,7 @@ public class CameraCandidateGenerator : MonoBehaviour
 
         if (validCandidates.Count == 0)
         {
-            Debug.LogError("[PCCG] No valid placement candidates. Check FilterStats.");
+            Debug.LogWarning("[PCCG] No valid placement candidates. Check FilterStats.");
         }
 
         Debug.Log($"[PCCG] {validCandidates.Count} valid candidates → top-{take} selected.");
@@ -1299,7 +1299,22 @@ public class CameraCandidateGenerator : MonoBehaviour
                 case "eye":
                 case "eyes":
                 case "face":
+                {
+                    if (headMeshRoot != null)
+                    {
+                        Renderer[] renderers = headMeshRoot.GetComponentsInChildren<Renderer>();
+                        if (renderers != null && renderers.Length > 0)
+                        {
+                            Bounds b = renderers[0].bounds;
+                            foreach (var r in renderers)
+                                b.Encapsulate(r.bounds);
+
+                            return b.center + Vector3.up * (b.extents.y * 0.10f);
+                        }
+                    }
+
                     return headBone.position;
+                }
 
                 case "mcu_ms":
                 case "medium":
@@ -1808,14 +1823,28 @@ public class CameraCandidateGenerator : MonoBehaviour
     bool PassesTooCloseToCharacter(CameraTrajectory traj)
     {
         Vector3 characterCenter = GetPivotPoint();
+        float effectiveAvoidRadius = GetEffectiveTrajectoryAvoidRadius();
+
         foreach (Vector3 pos in traj.positions)
         {
             Vector3 flatPos = new Vector3(pos.x, 0f, pos.z);
             Vector3 flatCenter = new Vector3(characterCenter.x, 0f, characterCenter.z);
-            if (Vector3.Distance(flatPos, flatCenter) < characterAvoidRadius)
+
+            if (Vector3.Distance(flatPos, flatCenter) < effectiveAvoidRadius)
                 return true;
         }
+
         return false;
+    }
+
+    float GetEffectiveTrajectoryAvoidRadius()
+    {
+        // Medium / close-up profiles require camera paths closer to the character.
+        // This changes only the trajectory clearance margin; placement scoring remains profile-constrained.
+        if (hOverH_min >= 0.24f)
+            return Mathf.Max(COLLISION_RADIUS * 1.5f, 0.25f);
+
+        return characterAvoidRadius;
     }
 
     CameraTrajectory BuildAvoidanceSplineTrajectory(
@@ -2116,6 +2145,126 @@ public class CameraCandidateGenerator : MonoBehaviour
 
         Debug.Log($"[PCCG] BuildOverheadCandidate(theta={targetThetaDeg:F0}): all retries rejected (collision/LOS/inside) → null.");
         return null;
+    }
+
+    private CameraCandidate BuildRuntimeFailSafeCandidate()
+    {
+        if (previewCamera == null || characterRoot == null)
+            return null;
+
+        Vector3 lookTargetPoint = GetLookTargetPoint();
+
+        float camY;
+        if (isGroundLevelProfile)
+        {
+            float groundY = GetGroundReferenceY();
+            camY = groundY + Mathf.Clamp(
+                (sampleCameraHeightMin + sampleCameraHeightMax) * 0.5f,
+                sampleCameraHeightMin,
+                sampleCameraHeightMax
+            );
+        }
+        else
+        {
+            camY = previewCamera.transform.position.y;
+        }
+
+        float subjectHeightM = GetReferenceSubjectHeight();
+        float fov = previewCamera.fieldOfView;
+        float tanHalfFov = Mathf.Tan(fov * 0.5f * Mathf.Deg2Rad);
+        float targetHOverH = Mathf.Max((hOverH_min + hOverH_max) * 0.5f, 0.001f);
+
+        float profileD = subjectHeightM / (2f * tanHalfFov * targetHOverH);
+        float verticalDelta = Mathf.Abs(lookTargetPoint.y - camY);
+
+        float maxTiltForFallback = Mathf.Max(targetTiltMax, 35f);
+        float minDForTilt = verticalDelta / Mathf.Max(Mathf.Sin(maxTiltForFallback * Mathf.Deg2Rad), 0.001f);
+
+        float D = Mathf.Max(profileD, minDForTilt + 0.05f);
+        float horizontalD = Mathf.Sqrt(Mathf.Max(0.15f * 0.15f, D * D - verticalDelta * verticalDelta));
+
+        Vector3[] directions =
+        {
+            characterRoot.forward,
+            -characterRoot.forward,
+            characterRoot.right,
+            -characterRoot.right,
+            (characterRoot.forward + characterRoot.right).normalized,
+            (characterRoot.forward - characterRoot.right).normalized,
+            (-characterRoot.forward + characterRoot.right).normalized,
+            (-characterRoot.forward - characterRoot.right).normalized
+        };
+
+        LayerMask combinedLayer = environmentLayer | characterLayer;
+
+        foreach (Vector3 rawDir in directions)
+        {
+            Vector3 dir = rawDir;
+            dir.y = 0f;
+            if (dir.sqrMagnitude < 0.0001f)
+                continue;
+            dir.Normalize();
+
+            Vector3 pos = new Vector3(
+                lookTargetPoint.x,
+                camY,
+                lookTargetPoint.z
+            ) + dir * horizontalD;
+
+            if (Physics.CheckSphere(pos, COLLISION_RADIUS, combinedLayer))
+                continue;
+
+            if (!HasLineOfSight(pos, lookTargetPoint))
+                continue;
+
+            if (!IsInsideSpaceByRaycast(pos))
+                continue;
+
+            Quaternion rot = Quaternion.LookRotation(lookTargetPoint - pos, Vector3.up);
+            float actualDist = Vector3.Distance(pos, lookTargetPoint);
+            float actualHOverH = subjectHeightM / (2f * actualDist * tanHalfFov);
+            float tiltDeg = ComputeCameraTiltDeg(pos, lookTargetPoint);
+            float angleScore = ComputeAngleScore(tiltDeg);
+            float scaleScore = ComputeScaleScore(actualHOverH);
+            float viewScore = ComputeViewPreferenceScore(pos);
+
+            float totalScore = Mathf.Max(
+                0.01f,
+                angleScore * 0.50f + scaleScore * 0.50f
+            );
+
+            return new CameraCandidate
+            {
+                position = pos,
+                rotation = rot,
+                totalScore = totalScore,
+                elevationDeg = Mathf.Asin(Mathf.Clamp((pos - GetPivotPoint()).normalized.y, -1f, 1f)) * Mathf.Rad2Deg,
+                hOverH = actualHOverH,
+                angleScore = angleScore,
+                scaleScore = scaleScore,
+                viewScore = viewScore,
+                tiltDeg = tiltDeg
+            };
+        }
+
+        Vector3 fallbackPos = previewCamera.transform.position;
+        Quaternion fallbackRot = Quaternion.LookRotation(lookTargetPoint - fallbackPos, Vector3.up);
+        float fallbackDist = Vector3.Distance(fallbackPos, lookTargetPoint);
+        float fallbackHOverH = subjectHeightM / (2f * Mathf.Max(fallbackDist, 0.001f) * tanHalfFov);
+        float fallbackTilt = ComputeCameraTiltDeg(fallbackPos, lookTargetPoint);
+
+        return new CameraCandidate
+        {
+            position = fallbackPos,
+            rotation = fallbackRot,
+            totalScore = 0.01f,
+            elevationDeg = Mathf.Asin(Mathf.Clamp((fallbackPos - GetPivotPoint()).normalized.y, -1f, 1f)) * Mathf.Rad2Deg,
+            hOverH = fallbackHOverH,
+            angleScore = ComputeAngleScore(fallbackTilt),
+            scaleScore = ComputeScaleScore(fallbackHOverH),
+            viewScore = ComputeViewPreferenceScore(fallbackPos),
+            tiltDeg = fallbackTilt
+        };
     }
 
     // Bird's-eye profile: trajectory 없이 best static placement만 적용
@@ -2468,6 +2617,33 @@ public class CameraCandidateGenerator : MonoBehaviour
         ApplyCameraFOV();
         GenerateCandidates();
 
+        if (isGroundLevelProfile && topCandidates.Count == 0)
+        {
+            float oldSampleElevationMin = sampleElevationMin;
+            float oldSampleElevationMax = sampleElevationMax;
+            int oldSampleCount = sampleCount;
+
+            Debug.LogWarning(
+                "[PCCG] Ground-level fallback retry: widened sampling elevation only. " +
+                "Profile h/H, tilt scoring, and ground-height constraint unchanged."
+            );
+
+            sampleElevationMin = Mathf.Min(sampleElevationMin, -70f);
+            sampleElevationMax = Mathf.Min(sampleElevationMax, 10f);
+            sampleCount = Mathf.Max(sampleCount, 1000);
+
+            try
+            {
+                GenerateCandidates();
+            }
+            finally
+            {
+                sampleElevationMin = oldSampleElevationMin;
+                sampleElevationMax = oldSampleElevationMax;
+                sampleCount = oldSampleCount;
+            }
+        }
+
         bool isRelaxedProfile =
             output != null &&
             (
@@ -2599,6 +2775,25 @@ public class CameraCandidateGenerator : MonoBehaviour
                     }
                     Debug.Log($"[PCCG] Top candidate tilts (post high_angle merge): [{tsb}]");
                 }
+            }
+        }
+
+        if (!isBirdsEyeProfile && topCandidates.Count == 0)
+        {
+            Debug.LogWarning(
+                "[PCCG] No profile-feasible candidates after all retries. " +
+                "Creating one runtime fail-safe candidate to keep the experiment running. " +
+                "Profile p is not modified."
+            );
+
+            CameraCandidate fallback = BuildRuntimeFailSafeCandidate();
+            if (fallback != null)
+            {
+                topCandidates.Add(fallback);
+                Debug.LogWarning(
+                    $"[PCCG] Runtime fail-safe candidate added: pos={fallback.position}, " +
+                    $"tilt={fallback.tiltDeg:F1}, h/H={fallback.hOverH:F3}, score={fallback.totalScore:F3}"
+                );
             }
         }
 
