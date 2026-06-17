@@ -2086,13 +2086,16 @@ public class CameraCandidateGenerator : MonoBehaviour
             return null;
         }
 
-        // 사용 가능한 최대 높이(lookTarget 기준 상대), 안전계수 0.9.
-        float hMax = (highestCeiling - lookTargetPoint.y) * 0.9f;
-        if (hMax <= 0.3f)
+        // 천장 여유 최대 높이(lookTarget 기준 상대), 안전계수 0.9 — 이제 높이 "탐색 상한"으로 사용.
+        float hCeilingMax = (highestCeiling - lookTargetPoint.y) * 0.9f;
+        if (hCeilingMax <= 0.3f)
         {
-            Debug.Log($"[PCCG] BuildOverheadCandidate: ceiling clearance too low (hMax={hMax:F2}) → null.");
+            Debug.Log($"[PCCG] BuildOverheadCandidate: ceiling clearance too low (hCeilingMax={hCeilingMax:F2}) → null.");
             return null;
         }
+        // 높이 탐색 하한. 천장 여유가 빠듯하면 상한으로 클램프.
+        float hMin = 0.5f;
+        if (hMin > hCeilingMax) hMin = hCeilingMax;
 
         // 수평 방향 = 인물 정면(characterRoot.forward, 수평 투영). 기존 unspecified 정면 반구(azimuth≈0)와 일관.
         Vector3 horiz = characterRoot.forward;
@@ -2104,14 +2107,19 @@ public class CameraCandidateGenerator : MonoBehaviour
         float subjectHeightM = GetReferenceSubjectHeight();
         // ※ shot size(h/H) 목표를 두지 않는다 — 각도 우선, shot size는 결과적으로 결정.
 
-        // 목표 θ에서 D 역산 → 충돌/가시성/내부 검사. 실패하면 θ를 2도씩 낮춰 26도까지 재시도.
-        // (공간이 낮을수록 천장 hMax가 작아 확보 가능한 θ가 작아진다 = 공간 독립적 fallback.)
+        // 이중 탐색: 바깥=높이 h(천장 코앞 hCeilingMax → hMin 으로 단계적 하강), 안쪽=theta(targetThetaDeg→26°).
+        //   높이를 낮추면 천장 충돌/공간밖 판정이 줄고, 같은 theta 유지 시 수평거리도 줄어 캐릭터에 가까워지나
+        //   long shot은 이미 양보(각도 우선)했으므로 허용된다.
+        int heightSteps = 7;
+        for (int hi = 0; hi < heightSteps; hi++)
+        {
+        float h = Mathf.Lerp(hCeilingMax, hMin, hi / (float)(heightSteps - 1));
         for (float theta = targetThetaDeg; theta >= 26f; theta -= 2f)
         {
             float tanT = Mathf.Tan(theta * Mathf.Deg2Rad);
             if (tanT <= 0.0001f) continue;
-            float dHoriz = hMax / tanT;                                  // 수평 거리 역산
-            Vector3 pos = lookTargetPoint + horiz * dHoriz + Vector3.up * hMax;
+            float dHoriz = h / tanT;                                  // 수평 거리 역산
+            Vector3 pos = lookTargetPoint + horiz * dHoriz + Vector3.up * h;
 
             if (Physics.CheckSphere(pos, COLLISION_RADIUS, combinedLayer)) continue;
             if (!HasLineOfSight(pos, lookTargetPoint)) continue;
@@ -2159,7 +2167,7 @@ public class CameraCandidateGenerator : MonoBehaviour
 
             Debug.Log(
                 $"[PCCG] high_angle fallback (shot-size relaxed): theta={theta:F0}, D={dActual:F2}, " +
-                $"h={hMax:F2}, FOV={fovForCandidate:F1}, resultH/H={resultingHOverH:F3}, tilt={tiltForScore:F1}, " +
+                $"h={h:F2}, FOV={fovForCandidate:F1}, resultH/H={resultingHOverH:F3}, tilt={tiltForScore:F1}, " +
                 $"note=long-shot constraint dropped due to ceiling clearance"
             );
 
@@ -2178,8 +2186,9 @@ public class CameraCandidateGenerator : MonoBehaviour
                 shotSizeRelaxed = true
             };
         }
+        }
 
-        Debug.Log($"[PCCG] BuildOverheadCandidate(theta={targetThetaDeg:F0}): all retries rejected (collision/LOS/inside) → null.");
+        Debug.Log($"[PCCG] BuildOverheadCandidate(theta={targetThetaDeg:F0}): all (height×theta) retries rejected. searched h=[{hMin:F2},{hCeilingMax:F2}] → null.");
         return null;
     }
 
@@ -2655,16 +2664,29 @@ public class CameraCandidateGenerator : MonoBehaviour
                 if (highCands.Count > 0)
                 {
                     int beforeCount = topCandidates.Count;
-                    foreach (var hc in highCands)
-                        topCandidates.Add(hc);
 
-                    // 일반 후보와 동일 점수 기준 내림차순 재정렬 후 topK개로 컷.
-                    // topCandidates[0]이 항상 실제 최고점이라는 불변식은 이 재정렬로 유지된다.
-                    topCandidates.Sort((a, b) => b.totalScore.CompareTo(a.totalScore));
-                    int take = Mathf.Min(topK, topCandidates.Count);
-                    topCandidates = topCandidates.GetRange(0, take);
+                    // ── high angle 자리 보장 병합 ──
+                    // high angle 후보는 점수(priority 0.8 + scaleScore 중립)가 eye level보다 낮아
+                    // 전체 정렬 컷에서 전부 잘린다. 따라서 topK 안에 high angle 자리를 "확정"으로 확보한다.
+                    //   high angle 개수(0~2)만큼 자리를 떼고, 남은 자리를 eye level 상위 점수로 채운다.
+                    // eye level 후보(현재 topCandidates)는 GenerateCandidates에서 이미 점수 내림차순 정렬돼 있다.
+                    var eyeLevelSorted = new List<CameraCandidate>(topCandidates);
 
-                    Debug.Log($"[PCCG] high_angle merged: added {highCands.Count} forced (was {beforeCount}, now {topCandidates.Count}, topK={topK}).");
+                    int highCount = highCands.Count;                       // 0~2 (확정 자리)
+                    int eyeSlots = Mathf.Max(0, topK - highCount);         // 남은 자리 = topK - high개수
+
+                    var finalList = new List<CameraCandidate>();
+                    for (int ei = 0; ei < eyeSlots && ei < eyeLevelSorted.Count; ei++)
+                        finalList.Add(eyeLevelSorted[ei]);                 // eye level 상위 eyeSlots개
+                    finalList.AddRange(highCands);                         // high angle 전부(반드시 포함)
+
+                    // 표시 순서용 점수 내림차순 정렬 — "이미 확정된 finalList 안에서만" 정렬하므로
+                    // high angle이 정렬 후에도 절대 빠지지 않는다. topCandidates[0]은 최고점이 유지된다.
+                    finalList.Sort((a, b) => b.totalScore.CompareTo(a.totalScore));
+                    topCandidates = finalList;
+
+                    Debug.Log($"[PCCG] high_angle merged: guaranteed {highCount} high slot(s), {Mathf.Min(eyeSlots, eyeLevelSorted.Count)} eye slot(s) " +
+                              $"(was {beforeCount}, now {topCandidates.Count}, topK={topK}).");
 
                     // [검증 로그] 병합 후 top 후보 tilt 분포 — eye_level군(tilt≈0)과 high_angle군(tilt≈32/38)이
                     //   실제로 함께 있는지 확인. (GenerateCandidates의 동일 로그는 병합 전이라 high가 안 보임.)
