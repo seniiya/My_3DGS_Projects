@@ -1152,15 +1152,24 @@ public class CameraCandidateGenerator : MonoBehaviour
 
         if (n > 0)
         {
-            var sb = new System.Text.StringBuilder();
-            for (int k = 0; k < n; k++)
-            {
-                if (k > 0) sb.Append(", ");
-                sb.Append("key").Append(k + 1).Append("→top").Append(_keyToCandidateIndex[k] + 1);
-            }
             // 정상 동작 시: N이 5로 찍히고, 여러 번 실행하면 key4·key5도 다른 top으로 배정된다.
-            Debug.Log($"[PCCG] Candidate key mapping shuffled ({n} keys): {sb}");
+            Debug.Log($"[PCCG] Candidate key mapping shuffled ({n} keys): {GetCandidateKeyMappingString()}");
         }
+    }
+
+    // 이번 시행의 키→후보 매핑을 "key1→top4, key2→top1, ..." 한 줄 문자열로 반환.
+    // 매핑이 없으면 빈 문자열. ShuffleCandidateKeyMapping 로그와 trials.csv의 key_mapping 컬럼이 공유.
+    public string GetCandidateKeyMappingString()
+    {
+        if (_keyToCandidateIndex == null || _keyToCandidateIndex.Length == 0)
+            return "";
+        var sb = new System.Text.StringBuilder();
+        for (int k = 0; k < _keyToCandidateIndex.Length; k++)
+        {
+            if (k > 0) sb.Append(", ");
+            sb.Append("key").Append(k + 1).Append("→top").Append(_keyToCandidateIndex[k] + 1);
+        }
+        return sb.ToString();
     }
 
     // 키 번호(1~5) → 표시되는 실제 후보 인덱스(0=top1...). 매핑 범위를 벗어나면 -1.

@@ -48,12 +48,18 @@ public class StudySessionLogger : MonoBehaviour
     public int candidatesPerTrial = 5;
 
     // ── CSV headers (스펙 고정) ────────────────────────────────────────────────
+    // ★ 기존 컬럼 순서 유지, 끝에 key_mapping만 추가. key_mapping = 이번 시행에서 키1~5에
+    //   각각 어떤 순위 후보(top N)가 셔플 배정됐는지를 "key1→top4, key2→top1, ..." 한 줄로 기록.
+    //   (key_presses.csv를 일일이 대조하지 않아도 시행별 매핑을 trials.csv에서 바로 확인 가능)
+    // ★ target_effect_class 바로 뒤에 user_effect_class 추가(참가자 본인 라벨 — 런타임엔 미수집,
+    //   사후 설문값을 수동으로 채우는 빈 자리). 끝의 key_mapping은 기존대로 유지.
     private const string TRIALS_HEADER =
-        "participant_id,session_id,trial_index,prompt_id,target_effect_class,user_command,source_path,parsed_effect_class,intensity,confidence,view_preference,warning,timestamp,latency_s";
+        "participant_id,session_id,trial_index,prompt_id,target_effect_class,user_effect_class,user_command,source_path,parsed_effect_class,intensity,confidence,view_preference,warning,timestamp,latency_s,key_mapping";
     // ★ 기존 컬럼 순서는 유지하고 끝에 assigned_key만 추가. assigned_key = 이 순위 후보(C1~C5)가
     //   이번 시행에서 몇 번 키(1~5)에 셔플 배정됐는지. candidate_id/total_score 등은 여전히 실제 순위 기준.
+    //   target_effect_class 뒤 user_effect_class도 trials.csv와 동일하게 추가(현재는 빈 값).
     private const string CANDIDATES_HEADER =
-        "participant_id,session_id,trial_index,prompt_id,target_effect_class,candidate_id,position_x,position_y,position_z,rotation_x,rotation_y,rotation_z,total_score,h_over_h,elevation_deg,tilt_deg,angle_score,scale_score,view_score,timestamp,assigned_key";
+        "participant_id,session_id,trial_index,prompt_id,target_effect_class,user_effect_class,candidate_id,position_x,position_y,position_z,rotation_x,rotation_y,rotation_z,total_score,h_over_h,elevation_deg,tilt_deg,angle_score,scale_score,view_score,timestamp,assigned_key";
     // 키 입력 로그(셔플된 표시 매핑으로 어떤 키가 어떤 순위 후보를 보여줬는지) 전용 CSV.
     private const string KEYPRESSES_HEADER =
         "participant_id,session_id,trial_index,prompt_id,key_pressed,shown_candidate_id,shown_rank,press_count,timestamp";
@@ -76,6 +82,9 @@ public class StudySessionLogger : MonoBehaviour
     private int _curTrialIndex;
     private string _curPromptId = "";
     private string _curTargetClass = "";
+    // 참가자 본인이 고른 감정 라벨. 런타임엔 수집하지 않으므로 기본 빈 값.
+    // 필요 시 SetUserEffectClass()로 채울 수 있고, 비어 있으면 출력에 빈 칸으로 기록된다.
+    private string _curUserEffectClass = "";
 
     // ── Public API ────────────────────────────────────────────────────────────
 
@@ -135,9 +144,16 @@ public class StudySessionLogger : MonoBehaviour
         _curTrialIndex = trialIndex;
         _curPromptId = promptId ?? "";
         _curTargetClass = targetEffectClass ?? "";
+        _curUserEffectClass = "";   // 새 시행마다 빈 값으로 리셋(사후 설문값은 SetUserEffectClass로 주입 가능)
 
         // 새 시행 시작 → 누적 키 입력 횟수 리셋. SetCurrentTrialAuto도 이 메서드를 거치므로 함께 처리된다.
         _keyPressCount = 0;
+    }
+
+    // (선택) 참가자 본인 감정 라벨을 현재 시행에 설정. 호출하지 않으면 출력에 빈 칸으로 남는다.
+    public void SetUserEffectClass(string userEffectClass)
+    {
+        _curUserEffectClass = userEffectClass ?? "";
     }
 
     // 편의 메서드: trialPlan(또는 기본값)에서 prompt_id/target을 채워 SetCurrentTrial 호출.
@@ -211,7 +227,8 @@ public class StudySessionLogger : MonoBehaviour
 
     // rawResponseJson: 서버 응답 원본 문자열(IntentParserClient의 responseJson). 있으면 raw jsonl에 그대로 저장.
     // latencySeconds: Send 클릭 → 후보 생성 완료까지의 총 시간(초). 음수면 미측정으로 빈 값 기록.
-    public void LogTrialIntent(string userCommand, IntentOutputData output, string rawResponseJson = null, float latencySeconds = -1f)
+    // keyMapping: 이번 시행의 키→후보 셔플 매핑 한 줄 문자열("key1→top4, ..."). 빈 값이면 빈 칸으로 기록.
+    public void LogTrialIntent(string userCommand, IntentOutputData output, string rawResponseJson = null, float latencySeconds = -1f, string keyMapping = "")
     {
         EnsureSession();
         if (_curTrialIndex <= 0) _curTrialIndex = 1;   // SetCurrentTrial 누락 시 안전장치
@@ -223,7 +240,7 @@ public class StudySessionLogger : MonoBehaviour
             {
                 Csv(participantId), Csv(_sessionId),
                 _curTrialIndex.ToString(CultureInfo.InvariantCulture),
-                Csv(_curPromptId), Csv(_curTargetClass), Csv(userCommand ?? ""),
+                Csv(_curPromptId), Csv(_curTargetClass), Csv(_curUserEffectClass), Csv(userCommand ?? ""),
                 Csv(output != null ? output.source_path : ""),
                 Csv(output != null ? output.effect_class : ""),
                 Csv(output != null ? output.intensity : ""),
@@ -231,7 +248,8 @@ public class StudySessionLogger : MonoBehaviour
                 Csv(output != null ? output.view_preference : ""),
                 Csv(output != null ? output.warning : ""),
                 Csv(Now()),
-                latencySeconds >= 0f ? F(latencySeconds) : ""
+                latencySeconds >= 0f ? F(latencySeconds) : "",
+                Csv(keyMapping ?? "")   // 쉼표 포함 문자열 → Csv()가 따옴표로 감싸 한 셀로 유지
             });
             _trialsWriter.WriteLine(row);
             _trialsWriter.Flush();
@@ -267,7 +285,7 @@ public class StudySessionLogger : MonoBehaviour
             {
                 Csv(participantId), Csv(_sessionId),
                 trialIndex.ToString(CultureInfo.InvariantCulture),
-                Csv(_curPromptId), Csv(_curTargetClass), Csv(candidateId),
+                Csv(_curPromptId), Csv(_curTargetClass), Csv(_curUserEffectClass), Csv(candidateId),
                 F(c.position.x), F(c.position.y), F(c.position.z),
                 F(euler.x), F(euler.y), F(euler.z),
                 F(c.totalScore), F(c.hOverH), F(c.elevationDeg), F(c.tiltDeg),
@@ -330,6 +348,7 @@ public class StudySessionLogger : MonoBehaviour
         sb.Append("\"trial_index\":").Append(_curTrialIndex.ToString(CultureInfo.InvariantCulture)).Append(',');
         sb.Append("\"prompt_id\":").Append(JsonStr(_curPromptId)).Append(',');
         sb.Append("\"target_effect_class\":").Append(JsonStr(_curTargetClass)).Append(',');
+        sb.Append("\"user_effect_class\":").Append(JsonStr(_curUserEffectClass)).Append(',');
         sb.Append("\"user_command\":").Append(JsonStr(userCommand ?? "")).Append(',');
         sb.Append("\"timestamp\":").Append(JsonStr(Now())).Append(',');
         sb.Append("\"response\":").Append(resp);
