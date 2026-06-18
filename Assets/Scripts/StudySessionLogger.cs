@@ -233,7 +233,11 @@ public class StudySessionLogger : MonoBehaviour
         EnsureSession();
         if (_curTrialIndex <= 0) _curTrialIndex = 1;   // SetCurrentTrial 누락 시 안전장치
 
-        // trials.csv: 14컬럼이 이 시점에 모두 확보됨 → 즉시 1행 기록 + flush (유실 방지)
+        // user_command 내 줄바꿈을 " / "로 평탄화 → trials.csv가 한 행으로 보이고 jsonl도 동일 값 사용.
+        // (멀티라인이 따옴표로 감싸져도 CSV가 물리적으로 여러 줄로 보이는 문제 방지. 정상 단일행 명령은 영향 없음)
+        userCommand = FlattenNewlines(userCommand);
+
+        // trials.csv: 이 시점에 모든 컬럼이 확보됨 → 즉시 1행 기록 + flush (유실 방지)
         if (saveTrialCsv && _trialsWriter != null)
         {
             string row = string.Join(",", new string[]
@@ -392,6 +396,16 @@ public class StudySessionLogger : MonoBehaviour
     {
         if (float.IsNaN(v) || float.IsInfinity(v)) return "";
         return v.ToString("0.######", CultureInfo.InvariantCulture);
+    }
+
+    // user_command 등의 줄바꿈(\r\n)을 " / "로 평탄화. 연속 줄바꿈/주변 공백은 하나로 합치고 양끝 정리.
+    // 줄바꿈이 없는 일반 명령은 그대로 반환된다.
+    private static string FlattenNewlines(string s)
+    {
+        if (string.IsNullOrEmpty(s)) return s;
+        if (s.IndexOf('\n') < 0 && s.IndexOf('\r') < 0) return s;
+        s = System.Text.RegularExpressions.Regex.Replace(s, @"\s*[\r\n]+\s*", " / ");
+        return s.Trim();
     }
 
     // CSV escaping: 쉼표/따옴표/줄바꿈 포함 시 따옴표로 감싸고 내부 따옴표는 두 번으로.
