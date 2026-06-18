@@ -164,7 +164,8 @@ public class IntentParserClient : MonoBehaviour
             {
                 _studyTrialIndex++;
                 studyLogger.SetCurrentTrialAuto(_studyTrialIndex);
-                studyLogger.LogTrialIntent(command, output, responseJson, latencySeconds);
+                string keyMapping = candidateGenerator != null ? candidateGenerator.GetCandidateKeyMappingString() : "";
+                studyLogger.LogTrialIntent(command, output, responseJson, latencySeconds, keyMapping);
                 studyLogger.LogCandidates(_studyTrialIndex, candidateGenerator);
             }
         }
