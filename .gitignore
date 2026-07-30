@@ -44,9 +44,19 @@ Thumbs.db
 # Large 3DGS / scene assets (exceed GitHub 100MB limit)
 *.ply
 *.bytes
+*.spz
 Assets/Scenes/total.fbx
 Assets/Scenes/total.ply
 Assets/Scenes/splat.ply
+
+# Imported meshes / rigs — 용량이 크고 재배포 권리가 불명확하다.
+# .meta 파일은 계속 추적한다 (Unity GUID 보존 → 자산 복원 시 참조가 깨지지 않음).
+*.fbx
+*.FBX
+
+# 3DGS 원본 캡처 자산 (3.2GB) — 저장소에 넣지 않는다.
+Assets/Ida Faber/
+Assets/Ida Faber.meta
 
 # Large textures
 Assets/Adventure_Character/Textures/*.tga
