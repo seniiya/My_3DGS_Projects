@@ -204,14 +204,6 @@
       },
       "hash": "2c6fed37da67a217367261fcfcd3316d34c73e76"
     },
-    "wu.yize.gsplat": {
-      "version": "file:C:/Users/User/gsplat-unity-main",
-      "depth": 0,
-      "source": "local",
-      "dependencies": {
-        "com.unity.mathematics": "1.3.2"
-      }
-    },
     "com.unity.modules.accessibility": {
       "version": "1.0.0",
       "depth": 0,
