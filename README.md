@@ -4,7 +4,7 @@
 
 3D Gaussian Splatting 씬에서 **자연어 지시문을 감정 기반 카메라 배치로 변환**하는 프리비즈 시스템의 Unity 클라이언트. (VRST 투고용)
 
-서버 · 분석 코드는 별도 저장소: **[seniiya/3DGS_Project_Server](https://github.com/seniiya/3DGS_Project_Server.git)**
+서버 · 분석 코드는 별도 저장소: **[seniiya/3DGS_Project_Server](https://github.com/seniiya/3DGS_Project_Server)**
 
 ```
 [이 저장소: Unity]  지시문 입력
