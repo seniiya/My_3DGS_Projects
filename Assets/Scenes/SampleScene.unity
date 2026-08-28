@@ -1591,7 +1591,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 0
+  m_IsActive: 1
 --- !u!114 &723911138
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -4329,7 +4329,7 @@ MonoBehaviour:
   debugSpatialRejectedPositions: []
   debugFeasiblePositions: []
   debugScoreRejectedPositions: []
-  hideDebugVizInGameView: 1
+  hideDebugVizInGameView: 0
   showTrajectoryLine: 1
   trajectoryColor: {r: 0, g: 1, b: 1, a: 1}
 --- !u!4 &1394059625

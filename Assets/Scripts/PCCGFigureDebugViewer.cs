@@ -24,6 +24,13 @@ public class PCCGFigureDebugViewer : MonoBehaviour
     public bool enableHotkeys = true;
     public bool captureOnModeSwitch = true;
 
+    [Header("Label Placement")]
+    [Tooltip("모드 라벨(Sampling/Filtering/Scoring)의 높이. 인물 발밑 기준 상대 높이(m). Play 중 조절 후 모드를 다시 실행하면 반영된다.")]
+    public float labelHeight = 2.1f;
+
+    [Tooltip("모드 라벨을 인물에서 카메라 쪽으로 당겨오는 거리(m). 0이면 인물 바로 위.")]
+    public float labelPullToCamera = 0f;
+
     [Header("Marker Size")]
     public float sampledSize = 0.06f;
     public float rejectedSize = 0.075f;
@@ -192,10 +199,26 @@ public class PCCGFigureDebugViewer : MonoBehaviour
 
     Vector3 GetLabelPosition()
     {
-        if (generator != null && generator.characterRoot != null)
-            return generator.characterRoot.position + Vector3.up * 2.1f;
+        Vector3 basePos = (generator != null && generator.characterRoot != null)
+            ? generator.characterRoot.position
+            : Vector3.zero;
 
-        return Vector3.up * 2.1f;
+        Vector3 pos = basePos + Vector3.up * labelHeight;
+
+        // 라벨을 카메라 쪽으로 당겨 화면 위쪽 여백에서 벗어나게 한다(수평 방향으로만 이동).
+        if (labelPullToCamera > 0.001f)
+        {
+            Camera cam = Camera.main;
+            if (cam != null)
+            {
+                Vector3 toCam = cam.transform.position - pos;
+                toCam.y = 0f;
+                if (toCam.sqrMagnitude > 0.0001f)
+                    pos += toCam.normalized * labelPullToCamera;
+            }
+        }
+
+        return pos;
     }
 
     GameObject CreateSphere(Vector3 pos, float size, Material mat, string name)
